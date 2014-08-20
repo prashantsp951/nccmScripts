@@ -1,0 +1,279 @@
+<?xml version="1.0"?>
+<!--
+Library script to support non active .bin file from file systems on IOS devices.
+-->
+<j:jelly xmlns:j="jelly:core"
+ xmlns:swim="jelly:com.pari.jelly.engine.tags.languages.LanguageTagLibrary"
+ xmlns:deletelib="deletelib" xmlns:su="StringUtility"
+ xmlns:call="call"
+ xmlns:glib="glib"
+ xmlns:u="jelly:com.pari.jelly.engine.tags.utility.UtilityTagLibrary"
+ xmlns:d="jelly:com.pari.jelly.engine.tags.deviceCommunication.DeviceTagLibrary">
+ 
+ <!-- The meta data information about the script file  -->
+ <swim:MetaDataValues>
+  <metaDataValue>
+   <metaData>
+    <name>Id</name>
+	<value>_WS_7600_DUAL_Delete_Support_Lib</value>
+   </metaData>
+   <metaData>
+	<name>Title</name>
+	<value>WS Defined Swim File System Delete Support Library 7600 DUAL</value>
+   </metaData>
+   <metaData>
+	<name>Type</name>
+	<value>Lib</value>
+   </metaData>
+   <metaData>
+	<name>Version</name>
+	<value>20140208.0000</value>
+   </metaData>
+  </metaDataValue>
+ </swim:MetaDataValues>
+
+ <!-- Begin Imports -->
+ <swim:ScriptImport id="_WS_7600_DUAL_Global_Lib"/>
+ <swim:ScriptImport id="Sys_String_Utility_Library"/>
+	
+ <!-- Swim delete files support library defining starts here -->
+ <swim:Library uri="deletelib"> 
+  <!-- ***************************************************************************************************************
+  Get the total spaces information by executing show file system command and parsing thr result.
+  Inputs  :
+   * returnVar  : variable Name on which the result should be passed.
+  Globals :
+   * Device     : the device bean 
+  Outputs : 
+	            Map of File system names and corresponding total capacity are returned form this method.
+  Throw  :      
+                This method throws exception if if there is any error while parsing the result of show file system command output.
+  ******************************************************************************************************************-->
+  <swim:Function name = "getTotalSpaces">
+   <j:set var="functionRetunVar" value= "${returnVar}"/>
+   <glib:executeShowCommand returnVar="result" cmd="show file systems"  deviceIpAddress="${Device.ipAddress}"/>
+   <!--d:ExecuteShowCommand returnVar="result" command="show file systems" ip = "${Device.ipAddress}"/-->
+   <j:if test="${result == null}">
+    <swim:Return varName="${functionRetunVar}"/>
+   </j:if>
+   <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+   <j:if test="${error!=null}">
+    <j:set var="showFileSystemCmdToExecute" value="show file system"/>
+	<glib:executeShowCommand returnVar="result" cmd="${showFileSystemCmdToExecute}"  deviceIpAddress="${Device.ipAddress}"/>
+	<!--d:ExecuteShowCommand returnVar="result" command="${showFileSystemCmdToExecute}"
+                         ip="${Device.ipAddress}"/-->
+   </j:if>
+   <j:if test="${result.getSuccessStatus()}">
+	<glib:parseShowFileSystemsAndGetTotal returnVar="rrr"/>
+	<swim:Return varName="${functionRetunVar}" value="${rrr}"/>
+   </j:if>
+	<swim:Throw message="${result.getOutput()}"/>
+  </swim:Function>
+
+  <!--******************************************************************************************************************************
+  Parses result of "dir drive " to Gets information about all files and their sizes on a given drive.
+  Globals:
+   None.
+  Inputs:
+   * result	   : result of "dir driveName" command.
+   * drive     : the drive name.
+   Outputs:
+   * returnVar : the return variable name on which the result should be assigned/returned.
+    Returns a map of fileName and corresponding sizes.
+  Throws:
+   None
+  ********************************************************************************************************************************-->
+  <swim:Function name="getFilesAndSizes">
+   <j:set var="cmd" value = "dir ${drive}"/>
+   <glib:executeShowCommand returnVar="result" cmd="${cmd}"  deviceIpAddress="${Device.ipAddress}"/>
+   <!--d:ExecuteShowCommand returnVar="result" ip="{Device.ipAddress}" command="${cmd}"/-->
+   <j:if test="${result.getSuccessStatus()==true &amp;&amp; result.getOutput() != null &amp;&amp; result.getOutput().length() &gt; 0}">
+	<glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+	<j:if test="${error!=null}">
+	<swim:Log type="LOGDEBUG" message="Error executing command ${cmd} on device: ${Device.ipAddress}" />
+	<swim:JobLog ip="${Device.ipAddress}" message="Error executing command ${cmd} on device." />
+   </j:if>
+   <u:Split returnVar="lines" input="${result.getOutput()}" />
+   <swim:For var="line" items="${lines}">
+	<u:Match input="${line}" regex="^[\s\*]+\d+[\s\D\s]+(\d+)\s(?:\s*\S+\s+)+(\S+\.?bin+)$" vars="sizeStr,fileName"/>
+	<j:if test="${MATCHED}">
+	 <u:Trim returnVar ="sizeStr" on="${sizeStr}"/>
+	 <swim:Create type="LongNumber" returnVar="fSize" value="-1"/>
+	 <j:catch var="Exception">
+	  <swim:Create type="LongNumber" returnVar="fSize" value="${sizeStr}"/>
+	 </j:catch>
+	 <j:if test="${exception !=null}">
+	  <swim:Log type="LOGERROR" message="Exception while parsing file size bytes ${sizeStr} for file: ${fileName} in drive ${drive}" />
+	 </j:if>
+	 <u:Add on="${filesAndSizes}"  param1="${drive}/${fileName}" param2="${fSize}"/>
+	</j:if>
+   </swim:For>
+   <!-- check for subdirectories -->	 
+	<glib:getSubDirs returnVar="subDirs" dirName="${drive}"/>
+    <j:if test="${subDirs != null &amp;&amp; subDirs.size()>0}"> 
+	 <swim:For var="fs" items="${subDirs}">
+      <deletelib:getFilesAndSizes drive="${fs}"/>
+     </swim:For>
+    </j:if>
+   </j:if>
+  </swim:Function>
+  
+  <!--****************************************************************************************************************
+  Delete .bin images files from filesystem if it finds any( but not the current active image file).
+  Globals:
+   * Device : The device bean
+   * FileSystems : List of FileSystems to look for delete.
+  Inputs:
+   * requiredSize : size required after all possible delete on any drive.
+  Outputs:
+	returnVar : varable name on which the drive name will be returned if it required size is availabe on any of the drive after all opssible deletes.
+	Return drive name or null;
+  Throws:  
+   None.		
+  ***************************************************************************************************************************-->
+  <swim:Function name="handleDelete">
+   <swim:Catch var="freeException">
+    <glib:getFreeSpaces returnVar="freeSpaces"/>
+   </swim:Catch>
+   <j:if test="${freeException != null}">
+    <swim:Log type="LOGERROR" message="Exception while finding free spaces on device: ${Device.ipAddress} ${freeException}" />
+    <swim:JobLog ip="${Device.ipAddress}" message="Exception while finding free spaces on device: ${freeException}" />
+    <swim:Return/>
+   </j:if>
+   <swim:Catch var="tException">
+	<deletelib:getTotalSpaces returnVar="totalSpaces"/>
+   </swim:Catch>
+   <j:if test="${tException != null}">
+	<swim:Log type="LOGERROR" message="Exception while finding total spaces on device: ${Device.ipAddress} ${tException}" />
+	<swim:JobLog ip="${Device.ipAddress}" message="Exception while finding total spaces on device: ${tException}" />
+	<swim:Return/>
+   </j:if>
+	
+   <swim:For var="drive" items="${FileSystems}">
+	<u:ContainsKey returnVar="validFileSystem" on="${totalSpaces}" param="${drive}"/>
+	<j:if test="${validFileSystem==true}">
+	 <swim:Log type="LOGDEBUG" message="Starting to check if making space for image copy on device: ${Device.ipAddress} under drive ${drive} is possible" />
+	 <swim:JobLog ip="${Device.ipAddress}" message="Starting to check if making space for image copy on device under drive ${drive} is possible" />
+	 <u:Get returnVar="szAvailable" on="${freeSpaces}"  param="${drive}" />
+	 <u:Get returnVar="capacityOfDrive" on="${totalSpaces}"  param="${drive}" />
+	 <j:choose>
+	  <j:when test="${capacityOfDrive!=null &amp;&amp; capacityOfDrive>requiredSize}">
+	   <swim:Log type="LOGDEBUG" 
+		            message="On device: ${Device.ipAddress} drive ${drive} has Total space : ${capacityOfDrive}, Available space :${szAvailable}, Required size for copy is ${requiredSize} makes the drive a candidate for file deletion" />
+	   <swim:JobLog ip="${Device.ipAddress}"  
+		               message="Drive ${drive} has Total space : ${capacityOfDrive}, Available space :${szAvailable}, Required size for copy is ${requiredSize} makes the drive a candidate for file deletion" />
+	   <swim:Create type="Map" returnVar="filesAndSizes"/>
+		<deletelib:getFilesAndSizes drive="${drive}" />
+		<j:if test="${filesAndSizes!= null &amp;&amp; filesAndSizes.isEmpty()!=true}">
+		 <j:set var="deviceImageName" value="${Device.bootPath}"/>
+		 <j:if test="${activeImageWithPath != null}">
+		  <j:set var="deviceImageName" value="${activeImageWithPath}"/>
+		 </j:if>
+		 <swim:Log type="LOGDEBUG" 
+		            message="At deletion : active image found is ${deviceImageName}" />
+         <!-- PAVAN :: REMOVED THE CODE TO ALLOW ACTIVE IMAGE DELETION ON THE DEVICE -->
+		 <u:KeySet returnVar="fkeys" on ="${filesAndSizes}"/>
+		 <!-- Here fkeys contains active image we need to delete it at last, so changing the order in which delete will proceed-->
+		 
+		 <u:ContainsKey returnVar="contains" on="${filesAndSizes}" param="${deviceImageName}"/>
+		 <j:if test="${contains==true}">
+		  <swim:Log type="LOGDEBUG" 
+		            message="At deletion : files under consideration contains active image" />
+		  <swim:Create returnVar="fileNamesList" type="List"/>
+		  <swim:For var="fileNameX" items="${fkeys}">
+		   <su:isEqual returnVar="isActiveImage" lhs="${fileNameX}" rhs="${deviceImageName}"/>
+		   <j:if test="${isActiveImage!=true}">
+		   <u:Add on="${fileNamesList}" param="${fileNameX}"/>
+		   </j:if>
+		  </swim:For>
+		  <u:Add on="${fileNamesList}" param="${deviceImageName}"/>
+		  <j:set var="fkeys" value="${fileNamesList}"/>
+		  <swim:Log type="LOGDEBUG" 
+		            message="At deletion : files under consideration contains active image adding it to last , ${fileNamesList}" />
+		 </j:if>
+		 
+		 <swim:Create type="LongNumber" returnVar="totDelSize" value="0"/>
+		 <swim:For var="fileName" items="${fkeys}">
+		 	<u:Get returnVar ="deleteSize" on="${filesAndSizes}" param="${fileName}"/>
+	 		<j:set var="totDelSize" value="${totDelSize+deleteSize}"/>
+		 </swim:For>
+		 <swim:Create type="LongNumber" returnVar="totResFreeSpace" value="${totDelSize + szAvailable}"/>
+		 <j:if test="${totResFreeSpace &lt; requiredSize}">
+			<swim:Log type="LOGERROR" message="Device ${Device.ipAddress} : Deleting image files will give free space of size:${totResFreeSpace} , where as required size is: ${requiredSize}" />
+	   	        <swim:JobLog ip="${Device.ipAddress}" message="Device ${Device.ipAddress} : Deleting image files will give free space of size:${totResFreeSpace} , where as required size is: ${requiredSize}" />
+	   	        <swim:Break/>
+		 </j:if>
+		 
+		 <u:KeySet returnVar="keys" on ="${filesAndSizes}"/>
+		 <swim:For var="fName" items="${fkeys}">
+		  <j:choose>
+		   <j:when test="${requiredSize &gt; szAvailable}">
+			 <!--d:ExecuteCommand returnVar="result" command="delete /force ${fName}&#10;&#10;&#10;&#10;\n" ip ="${Device.ipAddress}"  refreshTime="120000"/-->
+			 <glib:executeCommand returnVar="result" cmd="delete /force ${fName}&#10;&#10;&#10;&#10;\n" deviceIpAddress="${Device.ipAddress}"/>
+			 <j:if test="${result != null &amp;&amp; result.getSuccessStatus()==true}">
+			  <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+			  <j:if test="${error!=null}">
+			   <swim:Log type="LOGERROR" message="Unable to delete file ${fName} from  device:  ${Device.ipAddress} " />
+			   <swim:JobLog ip="${Device.ipAddress}" message="Unable to delete file ${fName} from device." />
+			   <swim:Return/>
+			  </j:if>
+			          <swim:Create returnVar="isABFlash" type="Boolean" value="false"/>
+			          <su:isEqual returnVar="isIOS" lhs="IOS" rhs="${Device.oSName}"/>
+			          <j:if test = "${isIOS==true}">
+			          <glib:getFlashType returnVar="fType" drive="${drive}" device="${Device}"/>
+			          <su:isEqual returnVar="isABFlashType" lhs="AB" rhs="${fType}"/>
+			          <j:if test = "${isABFlashType==true}">
+					    <glib:executeCommand returnVar="result" cmd="squeeze ${drive}&#10;&#10;&#10;&#10;\n" deviceIpAddress="${Device.ipAddress}"/>
+			               <!--d:ExecuteCommand returnVar="result" command="squeeze ${drive}&#10;&#10;&#10;&#10;\n" ip ="${Device.ipAddress}"  refreshTime="120000"/-->
+			     	 	<glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+			     	        <j:if test="${error!=null}">
+			     	            <swim:Log type="LOGERROR" message="'${command}' failed on device with error: ${result.output}" />
+			         	</j:if>
+			          </j:if>
+     				  </j:if>
+
+			      <!-- Removing from the boot path on the device -->
+			      <d:ExecuteConfigCommand returnVar="result" command="no boot system ${fName}&#10;&#10;&#10;&#10;"
+			                              ip="${Device.ipAddress}"/>
+			      <glib:parseErrorFromOutput returnVar="error"
+			                                 output="${result.getOutput()}"/>
+			      <j:if test="${error!=null}">
+			       <swim:Throw message="'${command}' failed on device with error: ${result.output}"/>
+    			      </j:if>
+			  <u:Get returnVar ="delSize" on="${filesAndSizes}" param="${fName}"/>
+			  <j:set var="szAvailable" value="${szAvailable+delSize}"/>
+			  <swim:Log type="LOGERROR" message="Device ${Device.ipAddress} : Deleted file ${fName} of size ${delSize} . Size available on drive is ${szAvailable}" />
+			  <swim:JobLog ip="${Device.ipAddress}" message="Deleted file ${fName} of size ${delSize}. Size available on drive is ${szAvailable}" />
+		      <j:if test="${szAvailable &gt; requiredSize-1}">
+			   <j:set var="driveName" value="${drive}"/>
+			   <swim:Break/>
+			  </j:if>
+		     </j:if>
+		   </j:when>
+		   <j:otherwise>
+		    <j:set var="driveName" value="${drive}"/>
+			<swim:Break/>
+		   </j:otherwise>
+		  </j:choose>
+		 </swim:For>
+		</j:if>
+	   <j:if test="${driveName!=null}">
+		<swim:Break/>
+	   </j:if>
+	  </j:when>
+	  <j:otherwise>
+	   <swim:Log type="LOGDEBUG" message="Drive ${drive} on device:  ${Device.ipAddress} is not a candidate for file removal" />
+	   <swim:JobLog ip="${Device.ipAddress}" message="Drive ${drive} on device is not a candidate for file removal" />
+	  </j:otherwise>
+	 </j:choose>
+	</j:if>
+   </swim:For>
+   <swim:Return varName="${returnVar}" value="${driveName}"/>
+  </swim:Function>
+ </swim:Library>
+	<!--
+	
+	[\s\*]+\d+[\s\D\s]+(\d+)\s(?:\s*\S+\s+)+(\S+\.?\S+)$
+	
+	-->
+</j:jelly>

@@ -1,0 +1,846 @@
+<?xml version="1.0"?>
+<j:jelly xmlns:j="jelly:core"
+         xmlns:swim="jelly:com.pari.jelly.engine.tags.languages.LanguageTagLibrary"
+         xmlns:glib="glib" xmlns:su="StringUtility"
+         xmlns:u="jelly:com.pari.jelly.engine.tags.utility.UtilityTagLibrary"
+         xmlns:d="jelly:com.pari.jelly.engine.tags.deviceCommunication.DeviceTagLibrary">
+ <!-- The meta data information about global library script file  -->
+ <swim:MetaDataValues>
+  <metaDataValue>
+   <metaData>
+    <name>Id</name>
+    <value>_WS_7600_DUAL_Global_Lib</value>
+   </metaData>
+   <metaData>
+    <name>Title</name>
+    <value>WS Defined Global Library Script for Image Installation 7600 DUAL</value>
+   </metaData>
+   <metaData>
+    <name>Type</name>
+    <value>Lib</value>
+   </metaData>
+   <metaData>
+    <name>Version</name>
+    <value>20140208.0000</value>
+   </metaData>
+  </metaDataValue>
+ </swim:MetaDataValues>
+ 
+ <!-- Begine Imports -->
+ <swim:ScriptImport id="Sys_String_Utility_Library"/>
+ <!-- end Imports -->
+ 
+ <!-- Defining the library functions -->
+ <swim:Library uri="glib">
+ 
+  <!-- ******************************************************************************************** 
+  Parse the output of a command for standard error checks to see if the command executed succesfully or failed.
+  Global Variables:
+   None. 
+  Inputs:
+    output: Output of the command.
+  Outputs:
+    Returns null if there is no error. Otherwise, returns the actual output from the device.
+  ***************************************************************************************************-->
+  <swim:Function name="parseErrorFromOutput">
+   <j:if test="${output!=null}">
+    <su:toLowerCase returnVar="lower" on="${output}"/>
+    <su:contains returnVar="invalid" on="${lower}" token="% invalid"/>
+    <su:contains returnVar="hasErrorr" on="${lower}" token="%error"/>
+	<su:contains returnVar="hasErr" on="${lower}" token="% error "/>
+    <su:contains returnVar="incomplete" on="${lower}" token="% incomplete"/>
+	<su:contains returnVar="failedStr" on="${lower}" token="failed"/> 
+	<su:contains returnVar="unknownStr" on="${lower}" token="% unknown"/>
+	<su:contains returnVar="errorrStt" on="${lower}" token="error:"/>
+    <j:if test="${hasErrorr || invalid || incomplete || hasErr || failedStr || unknownStr || errorrStt}">
+     <swim:Return varName="${returnVar}" value="${output}"/>
+    </j:if>
+    <swim:Return varName="${returnVar}"/>
+   </j:if>
+   <swim:Return varName="${returnVar}" value="output is null"/>
+  </swim:Function>
+  
+  <!-- ******************************************************************************************** 
+  Parse the output of show file systems command to find out free space on the drives on the device.
+  Global Variables:
+   None. 
+Inputs:
+      result: Result of the "show file system" command exeuction.
+Outputs:
+      Returns a map where the key is the drive name and value is a long value with free space on the drive in bytes.
+Throws:
+      Exception if there is an error in the output of "show file system".
+***************************************************************************************************-->
+  <swim:Function name="parseShowFileSystems">
+   <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+   <j:if test="${error!=null}">
+    <swim:Throw message="${result.output}"/>
+   </j:if>
+   <swim:Create type="Map" returnVar="freeSpaces"/>
+   <u:Split returnVar="lines" input="${result.getOutput()}"/>
+   <swim:For var="line" items="${lines}">
+    <u:Match input="${line}"
+             regex="^[\s\*]+([0-9]+)\s+([0-9]+)\s+(\S+)\s+([^oO\s]+)\s+([^:#]+).*$"
+             vars="sizeStr,freeStr,type,flags,drive" trim="true"/>
+    <j:if test="${MATCHED}">
+     <swim:Create type="LongNumber" returnVar="free" value="-1"/>
+     <j:catch var="Exception">
+      <swim:Create type="LongNumber" returnVar="free" value="${freeStr}"/>
+     </j:catch>
+     <j:if test="${exception !=null}">
+      <swim:Log type="LOGERROR"
+                message="Exception while parsing free bytes ${freeStr} for disk: ${drive}"/>
+     </j:if>
+     <!-- add the drive name and free space to freesapaces map -->
+	 <j:set var="drive" value="${drive}:"/>
+     <u:Add on="${freeSpaces}" param1="${drive}" param2="${free}"/>
+    </j:if>
+   </swim:For>
+   <swim:Return varName="${returnVar}" value="${freeSpaces}"/>
+  </swim:Function>
+  
+  <!-- ******************************************************************************************** 
+  Parse the output of show file systems command to find out the drives on the device.
+  Global Variables:
+   None. 
+Inputs:
+      result: Result of the "show file system" command exeuction.
+	  driveTypePattern : the drive type pattern to include
+Outputs:
+      Returns a set drive names .
+Throws:
+      Exception if there is an error in the output of "show file system".
+***************************************************************************************************-->
+  <swim:Function name="parseShowFileSystemsAndgetDrive">
+   <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+   <j:if test="${error!=null}">
+    <swim:Throw message="${result.output}"/>
+   </j:if>
+   <swim:Create type="Set" returnVar="drives"/>
+   <u:Split returnVar="lines" input="${result.getOutput()}"/>
+   <j:if test="${driveTypePattern==null}">
+    <j:set var="driveTypePattern" value="(\S+)"/>
+   </j:if>
+   <swim:For var="line" items="${lines}">
+    <u:Match input="${line}"
+             regex="^[\s\*]+([0-9]+)\s+([0-9]+)\s+${driveTypePattern}\s+(\S+)\s+([^:#]+).*$"
+             vars="sizeStr,freeStr,type,flags,drive" trim="true"/>
+    <j:if test="${MATCHED}">
+     <!-- add the drive name and free space to freesapaces map -->
+	 <j:set var="drive" value="${drive}:"/>
+     <u:Add on="${drives}" param="${drive}"/>
+    </j:if>
+   </swim:For>
+   <swim:Return varName="${returnVar}" value="${drives}"/>
+  </swim:Function>
+  <!-- ******************************************************************************************** 
+    Parse the output of show <drive>: all command to find out the type of memory and if it is of flash type then returns the flash type.
+    Global Variables:
+     None. 
+  Inputs:
+        result: Result of the "show <drive>: all" command execution.
+  Outputs:
+        Returns the flash type .
+  Throws:
+        Exception if there is an error in the output of "show <drive>: all".
+  ***************************************************************************************************-->
+    <swim:Function name="parseOutputAndGetFlashType">
+     <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+     <j:if test="${error!=null}">
+      <swim:Return varName="${returnVar}" value="NA"/>
+     </j:if>
+      <j:set var="flashType" value="NA"/>
+      <su:contains returnVar="isFlash1" on="${result.getOutput()}" token="flash"/>
+      <su:contains returnVar="isFlash2" on="${result.getOutput()}" token="Flash"/>
+         <j:if test="${isFlash1==true || isFlash2==true}">
+           <su:contains returnVar="isClassC" on="${result.getOutput()}" token="GEOMETRY"/>
+           <j:if test="${isClassC==true}">
+          	<swim:Return varName="${returnVar}" value="C"/>
+           </j:if>
+           <swim:Return varName="${returnVar}" value="AB"/>
+   	 </j:if>
+     <swim:Return varName="${returnVar}" value="NA"/>
+  </swim:Function>
+  <!-- ******************************************************************************************** 
+Gets the fress spaces on the device. Executes show file systems command on the device and parses it to find out the
+free spaces.
+Global Variables:
+ * Device: the device bean
+Inputs:
+ * showFileSystemCmd: the command for show file system. If null cammand taken is 'show file system'.
+Outputs:
+      Returns a map where the key is the drive name and value is a long value with free space on the drive in bytes.
+Throws:
+      Exception if there is an error in the output of "show file system".
+***************************************************************************************************-->
+  <swim:Function name="getFreeSpaces">
+   <j:set var="functionRetunVar" value="${returnVar}"/>
+   <j:set var="showFileSystemCmdToExecute" value="show file systems"/>
+   <j:if test="${showFileSystemCmd != null}">
+	 <j:set var="showFileSystemCmdToExecute" value="${showFileSystemCmd}"/>
+   </j:if>
+   <glib:executeShowCommand returnVar="result" cmd="${showFileSystemCmdToExecute}"  deviceIpAddress="${Device.ipAddress}"/>
+   <!--d:ExecuteShowCommand returnVar="result" command="${showFileSystemCmdToExecute}"
+                         ip="${Device.ipAddress}"/-->
+   <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+   <j:if test="${error!=null &amp;&amp; showFileSystemCmd==null}">
+    <j:set var="showFileSystemCmdToExecute" value="show file system"/>
+	<glib:executeShowCommand returnVar="result" cmd="${showFileSystemCmdToExecute}"  deviceIpAddress="${Device.ipAddress}"/>
+	<!--d:ExecuteShowCommand returnVar="result" command="${showFileSystemCmdToExecute}"
+                         ip="${Device.ipAddress}"/-->
+   </j:if>			 
+   <j:if test="${result == null}">
+    <swim:Return varName="${functionRetunVar}"/>
+   </j:if>
+   <j:if test="${result.getSuccessStatus()}">
+    <glib:parseShowFileSystems returnVar="rrr"/>
+    <swim:Return varName="${functionRetunVar}" value="${rrr}"/>
+   </j:if>
+   <swim:Throw message="${result.getError()}"/>
+  </swim:Function>
+  
+    <!-- ******************************************************************************************** 
+Gets the drive information on device. Executes show file systems command on the device and parses it to find out the
+drive information.
+Global Variables:
+ * Device: the device bean
+Inputs:
+ * showFileSystemCmd: the command for show file system. If null cammand taken is 'show file system'.
+ * driveTypePattern : pattern for drive type to conside, if null all drive types are condidered.
+Outputs:
+      Returns a Set of drive names.
+Throws:
+      Exception if there is an error in the output of "show file system".
+***************************************************************************************************-->
+  <swim:Function name="getDrives">
+   <j:set var="functionRetunVar" value="${returnVar}"/>
+   <j:set var="showFileSystemCmdToExecute" value="show file systems"/>
+   <j:if test="${showFileSystemCmd != null}">
+	 <j:set var="showFileSystemCmdToExecute" value="${showFileSystemCmd}"/>
+   </j:if>
+   <glib:executeShowCommand returnVar="result" cmd="${showFileSystemCmdToExecute}"  deviceIpAddress="${Device.ipAddress}"/>
+   <!--d:ExecuteShowCommand returnVar="result" command="${showFileSystemCmdToExecute}"
+                         ip="${Device.ipAddress}"/-->
+   <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+   <j:if test="${error!=null &amp;&amp; showFileSystemCmd==null}">
+    <j:set var="showFileSystemCmdToExecute" value="show file system"/>
+	<glib:executeShowCommand returnVar="result" cmd="${showFileSystemCmdToExecute}"  deviceIpAddress="${Device.ipAddress}"/>
+	<!--d:ExecuteShowCommand returnVar="result" command="${showFileSystemCmdToExecute}"
+                         ip="${Device.ipAddress}"/-->
+   </j:if>			 
+   <j:if test="${result == null}">
+    <swim:Return varName="${functionRetunVar}"/>
+   </j:if>
+   <j:if test="${result.getSuccessStatus()}">
+    <glib:parseShowFileSystemsAndgetDrive driveTypePattern="${driveTypePattern}" returnVar="rrr"/>
+    <swim:Return varName="${functionRetunVar}" value="${rrr}"/>
+   </j:if>
+   <swim:Throw message="${result.getError()}"/>
+  </swim:Function>
+  <!-- ******************************************************************************************** 
+Gets the drive information on star device. Executes show file systems command on the device and parses it to find out the
+drive information.
+Global Variables:
+ * Device: the device bean
+Inputs:
+ * showFileSystemCmd: the command for show file system. If null cammand taken is 'show file system'.
+ * driveTypePattern : pattern for drive type to conside, if null all drive types are condidered.
+Outputs:
+      Returns a Set of drive names.
+Throws:
+      Exception if there is an error in the output of "show file system".
+***************************************************************************************************-->
+  <swim:Function name="getStarDeviceDrives">
+   <j:set var="functionRetunVar" value="flash"/>
+   <j:set var="showFileSystemCmdToExecute" value="show file systems"/>
+   <j:if test="${showFileSystemCmd != null}">
+	 <j:set var="showFileSystemCmdToExecute" value="${showFileSystemCmd}"/>
+   </j:if>
+   <glib:executeShowCommand returnVar="result" cmd="${showFileSystemCmdToExecute}"  deviceIpAddress="${Device.ipAddress}"/>
+   <!--d:ExecuteShowCommand returnVar="result" command="${showFileSystemCmdToExecute}"
+                         ip="${Device.ipAddress}"/-->
+   <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+   <j:if test="${error!=null &amp;&amp; showFileSystemCmd==null}">
+    <j:set var="showFileSystemCmdToExecute" value="show file system"/>
+	<glib:executeShowCommand returnVar="result" cmd="${showFileSystemCmdToExecute}"  deviceIpAddress="${Device.ipAddress}"/>
+	<!--d:ExecuteShowCommand returnVar="result" command="${showFileSystemCmdToExecute}"
+                         ip="${Device.ipAddress}"/-->
+   </j:if>			 
+   <j:if test="${result == null}">
+    <swim:Return varName="${functionRetunVar}"/>
+   </j:if>
+   <j:if test="${result.getSuccessStatus()}">
+    <glib:parseShowFileSystemsAndgetDrive driveTypePattern="${driveTypePattern}" returnVar="rrr"/>
+    <swim:Return varName="${functionRetunVar}" value="${rrr}"/>
+   </j:if>
+   <swim:Throw message="${result.getError()}"/>
+  </swim:Function>
+  <!-- ******************************************************************************************** 
+Given a full path of a file on device, get the name of the image.
+Global Variables:
+			None.
+Inputs:
+      onPath: Path to get the filename.
+Outputs:
+      Returns file name for the given path.
+***************************************************************************************************-->
+  <swim:Function name="getFileNameFromPath">
+   <u:Match input="${onPath}" regex="(?:[^\/|^\|^:]+[\/|\|:]+)*([^\/|^\|^:]+)"
+            vars="onPath"/>
+   <swim:Return varName="${returnVar}" value="${onPath}"/>
+  </swim:Function>
+<!-- ********************************************************************************************************
+		Parses show file systems output to find the capacity/Total size of all the drives. 
+Global Variables:
+			None.
+Inputs:
+      result: Output of "show file systems"
+Outputs:
+      Returns a map where the key is the drive name and value is a long value with total size of the drive in bytes.
+*************************************************************************************************************-->
+  <swim:Function name="parseShowFileSystemsAndGetTotal">
+   <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+   <j:if test="${error!=null}">
+    <swim:Throw message="${result.output}"/>
+   </j:if>
+   <swim:Create type="Map" returnVar="totalSpaces"/>
+   <u:Split returnVar="lines" input="${result.getOutput()}"/>
+   <swim:For var="line" items="${lines}">
+    <swim:Create type="String" returnVar="hash" value="#"/>
+    <swim:Create type="String" returnVar="emptyString" value=""/>
+    <u:Match input="${line}"
+               regex="^[\s\*]+([0-9]+)\s+([0-9]+)\s+(\S+)\s+(\S+)\s+([^:#]+).*$"
+               vars="sizeStr,freeStr,type,flags,drive"/>
+    <j:if test="${MATCHED}">
+     <u:Trim returnVar="sizeStr" on="${sizeStr}"/>
+     <swim:Create type="LongNumber" returnVar="total" value="-1"/>
+     <j:catch var="Exception">
+      <swim:Create type="LongNumber" returnVar="total" value="${sizeStr}"/>
+     </j:catch>
+     <j:if test="${exception !=null}">
+      <swim:Log type="LOGERROR"
+                message="Exception while parsing total bytes ${sizeStr} for disk: ${drive}"/>
+     </j:if>
+	 <j:set var="drive" value="${drive}:"/>
+     <u:Add on="${totalSpaces}" param1="${drive}" param2="${total}"/>
+    </j:if>
+   </swim:For>
+   <swim:Return varName="${returnVar}" value="${totalSpaces}"/>
+  </swim:Function>
+  
+  <!-- ******************************************************************************************** 
+  Parses the output of "dir *" command and checks to see if a given file is found on the device.
+  Inputs:
+   * output: The output string of the dir command.
+   * name: Name of the file to check the presense for.
+   * drive: Drive on which the dir command is executed
+   
+  Outputs:
+   Returns the path to the file if the file is found.
+   Returns null if the file is not found or could not parse the output (if device returns an error, e.g. invalid command etc)
+  ***************************************************************************************************-->
+  <swim:Function name="parseDirPath">
+   <glib:parseErrorFromOutput returnVar="error" output="${output}"/>
+   <j:if test="${error != null}">
+    <swim:Return varName="${returnVar}"/>
+   </j:if>
+   <su:contains returnVar="containsF" on="${output}" token="Failure"/>
+   <j:if test="${containsF==true}">
+    <swim:Return varName="${returnVar}"/>
+   </j:if>
+   <su:contains returnVar="containsf" on="${output}" token="failure"/>
+   <j:if test="${containsf==true}">
+    <swim:Return varName="${returnVar}"/>
+   </j:if>
+   <su:contains returnVar="contains" on="${output}" token="${name}"/>
+   <j:if test="${contains==true}">
+    <swim:Return varName="${returnVar}" value="${drive}/${name}"/>
+   </j:if>
+   <swim:Return varName="${returnVar}"/>
+  </swim:Function>
+  
+  <!-- ******************************************************************************************** 
+  Gets the prefix from an image name. For example, if the Image name is c1700-adventerprisek9-mz.124-25d.bin
+  this function returns c1700.
+   Inputs:
+	* onString: Name of the image to find the prefix for
+   Outputs:
+	The prefix of the image, if the image name contains "-". Returns null otherwise.
+  ***************************************************************************************************-->
+  <swim:Function name="getImagePrefix">
+   <su:contains returnVar="contains" on="${onString}" token="-"/>
+   <j:choose>
+    <j:when test="${contains == true}">
+	 <u:Match input="${onString}" regex="([^-]+)-.*" vars="prefixName"/>
+	 <j:choose>
+	  <j:when test="${MATCHED}">
+	   <swim:Return varName="${returnVar}" value="${prefixName}"/>
+	  </j:when>
+	  <j:otherwise>
+	   <swim:Return varName="${returnVar}"/>
+	  </j:otherwise>
+	 </j:choose>
+	</j:when>
+	<j:otherwise>
+	 <swim:Return varName="${returnVar}"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+  <!-- 
+  Gets sub directory list of given directory :
+  Inputs:
+   * dirName:  
+  Globals:
+   * Device : the device bean.  
+  -->
+  <swim:Function name="getSubDirs">
+    <swim:Create returnVar="dirs" type="Set"/>
+	<j:set var="cmd" value="dir ${dirName}"/>
+	<glib:executeShowCommand returnVar="result" cmd="${cmd}"  deviceIpAddress="${Device.ipAddress}"/>
+    <!--d:ExecuteShowCommand returnVar="result" ip="{Device.ipAddress}" command="${cmd}"/-->
+	<swim:Catch var="dirException">
+    <j:if test="${result.getSuccessStatus()==true &amp;&amp; result.getOutput() != null &amp;&amp; result.getOutput().length() &gt; 0 }">
+	 <u:Split returnVar="lines" input="${result.getOutput()}"/>
+     <swim:For var="line" items="${lines}">
+      <u:Match input="${line}"
+             regex="^[\s\*]+\d+\s*d\S\S\S[\s\D\s]+\d+\s(?:\s*\S+\s+)+(\S+).*$"
+             vars="subDirName" trim="true"/>
+      <j:if test="${MATCHED}">
+	   <u:Add on="${dirs}" param="${dirName}/${subDirName}"/>
+	  </j:if>
+	 </swim:For>
+	</j:if>
+	</swim:Catch>
+	<j:if test="${dirException != null}">
+	 
+	</j:if>
+	<swim:Return varName="${returnVar}" value="${dirs}"/>
+  </swim:Function>
+  
+  <!-- ******************************************************************************************** 
+  Gets the fress spaces on the device. Executes show file systems command on the device and parses it to find out the
+  free spaces.
+  Inputs:
+   * device: the device bean
+   * showFileSystemCmd: the command for show file system. If null cammand taken is 'show file system'.
+  Outputs:
+      Returns a map where the key is the drive name and value is a long value with free space on the drive in bytes.
+  Throws:
+      Exception if there is an error in the output of "show file system".
+***************************************************************************************************-->
+  <swim:Function name="getCurrentFlash">
+   <j:set var="functionRetunVar" value="${returnVar}"/>
+   <j:if test="${showFileSystemCmd == null}">
+	 <j:set var="showFileSystemCmd" value="show file systems"/>
+   </j:if>
+   <glib:executeShowCommand returnVar="result" cmd="${showFileSystemCmd}"  deviceIpAddress="${device.ipAddress}"/>
+   <!--d:ExecuteShowCommand returnVar="result" command="${showFileSystemCmd}"
+                         ip="${device.ipAddress}"/-->
+						 
+   <j:if test="${result == null}">
+    <swim:Return varName="${functionRetunVar}"/>
+   </j:if>
+   <j:if test="${result.getSuccessStatus()}">
+    <glib:parseShowFileSystemsAndGetCurrentFlash returnVar="rrr"/>
+    <swim:Return varName="${functionRetunVar}" value="${rrr}"/>
+   </j:if>
+   <swim:Throw message="${result.getError()}"/>
+  </swim:Function> 
+  
+  
+  <!-- ******************************************************************************************** 
+    Gets the kind of Flash memory on the device. 
+    Input:
+     * device: the device bean
+     * drive: the drive to be tested
+    Output:
+        Returns the kind of Flash memory.
+    Throws:
+        Exception if there is an error in the output of "show <drive>: all".
+  ***************************************************************************************************-->
+    <swim:Function name="getFlashType">
+     <!--d:ExecuteCommand returnVar="output" command="show ${drive} all"
+                           ip="${device.ipAddress}"/-->
+     <glib:executeCommand returnVar="output" cmd="show ${drive} all" deviceIpAddress="${device.ipAddress}"/>
+     <j:if test="${output == null}">
+      <swim:Return varName="${returnVar}" value="NA"/>
+     </j:if>
+     <j:if test="${output.getSuccessStatus()}">
+      <glib:parseOutputAndGetFlashType returnVar="flashType" result="${output}"/>
+      <swim:Return varName="${returnVar}" value="${flashType}"/>
+     </j:if>
+     <swim:Return varName="${returnVar}" value="NA"/>
+    </swim:Function> 
+  
+  
+  
+  
+  
+  <!-- *********************************************************************************
+   Populates device Info by using different commands like 'show version' and 'show file system'
+   to the device bean object provided as input
+   Inputs:
+   * device: the device bean object
+   Throws:
+   Exception if device population fails
+   ************************************************************************************-->
+  <swim:Function name="populateDeviceInfo">
+  <j:if test="${device!= null &amp;&amp; device.oSName != null}">
+   <!-- 
+   Define regex
+   -->
+   <su:isEqual returnVar="isIOS" lhs="IOS" rhs="${device.oSName}"/>
+   <su:isEqual returnVar="isIOSXE" lhs="IOS-XE" rhs="${device.oSName}"/>
+   <j:set var="isVersionSet" value="false"/>
+   <j:set var="isBuildPathSet" value="false"/>
+   <j:set var="isCRAMSet" value="false"/>
+   <j:set var="isCFLASHSet" value="false"/>
+   <j:choose>
+	  <j:when test="${isIOS==true || isIOSXE==true}">
+	   <j:set var="versionRegex" value="^.*Version\s+([^,\s\[]+),?\s*.*$"/>
+       <j:set var="buildPathRegex" value="^.*[sS]ystem image file is:?[\s]+\&quot;?(?:[^\s\:\/]+(?:\:|\/)+)*([^\&quot;\s\/]+)\&quot;?.*"/>
+       <j:set var="currentRAMRegex" value=".*[C|c]isco.*\swith\s(\d+)\S(?:\/(\d+))?.*bytes of memory.*"/>
+       <!--j:set var="currentFLASHRegex" value="(\d+)\S\s+bytes of.*non-volatile conf.*"/ -->
+	   <swim:Catch var="FreeSpaceException">
+	     <!-- LET ME GET THE FILE SYSTEM INFORMATION TO DETERMINE FREE SPACES -->
+         <glib:getCurrentFlash device="${device}" returnVar="currentFLASH"/>
+		 <j:if test="${currentFLASH != null}">
+		  <j:setProperties object="${device}" currentFlash="${currentFLASH}"/>
+		 </j:if>
+        </swim:Catch>
+	    <j:if test="${FreeSpaceException != null}">
+		 <swim:Catch var="FreeSpaceException">
+	      <!-- LET ME GET THE FILE SYSTEM INFORMATION TO DETERMINE FREE SPACES -->
+          <glib:getCurrentFlash device="${device}" returnVar="currentFLASH" showFileSystemCmd="show file system"/>
+		  <j:if test="${currentFLASH != null}">
+		  <j:setProperties object="${device}" currentFlash="${currentFLASH}"/>
+		  </j:if>
+         </swim:Catch>
+	    </j:if>
+	  </j:when>
+   </j:choose>
+    
+   <glib:executeShowCommand returnVar="result" cmd="show version"  deviceIpAddress="${device.ipAddress}"/>
+   <!--d:ExecuteShowCommand returnVar="result" command="show version" refreshTime="300000" ip="${device.ipAddress}"/-->
+   <j:if test="${result != null &amp;&amp; result.getSuccessStatus() &amp;&amp; result.getOutput() != null}">
+    <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+    <j:if test="${error!=null}">
+     <swim:Throw message="${result.output}"/>
+    </j:if>
+    <j:set var="result" value="${result.getOutput()}"/>
+    <u:Split returnVar="lines" input="${result}"/>
+     <swim:For var="line" items="${lines}">
+	  <j:if test="${isVersionSet!=true &amp;&amp; versionRegex!= null}">
+		<u:Match input="${line}"
+             regex="${versionRegex}"
+             vars="version" trim="true"/>
+		<j:if test="${MATCHED}">
+	     <j:set var="isVersionSet" value="true"/>
+		 <j:setProperties object="${device}" oSVersion="${version}"/>
+		 <j:invoke on="${device}" method="setOSVersion">
+		  <j:arg type="java.lang.String" value="${version}" />
+		 </j:invoke>
+		</j:if>
+	  </j:if> 
+	  <j:if test="${isBuildPathSet!=true &amp;&amp; buildPathRegex != null}">
+		<u:Match input="${line}"
+             regex="${buildPathRegex}"
+             vars="buildPath" trim="true"/>
+		<j:if test="${MATCHED}">
+	     <j:set var="isBuildPathSet" value="true"/>
+		 <j:setProperties object="${device}" bootPath="${buildPath}"/>
+		</j:if>
+	  </j:if>
+	  
+	  <j:if test="${isCRAMSet!=true &amp;&amp; currentRAMRegex != null}">
+		<u:Match input="${line}"
+             regex="${currentRAMRegex}"
+             vars="currentRAM,usedR" trim="true"/>
+		<j:if test="${MATCHED}">
+	     <j:set var="isCRAMSet" value="true"/>
+		 <j:if test="${usedR != null}">
+		  <j:set var="currentRAM" value="${currentRAM+usedR}"/>
+		 </j:if>
+		 <swim:Catch var="NFException">
+		  <swim:Create type="LongNumber" returnVar="currentRAM" value="${currentRAM}"/>
+	      <swim:Create type="LongNumber" returnVar="mbVal" value="1024"/>
+		  <swim:Create type="Decimal" returnVar="dVal" value="${currentRAM/mbVal}"/>
+	      
+          <j:invokeStatic var="decValue" className="java.lang.Math" method="ceil">
+	       <j:arg type = "double" value="${dVal}" />
+	      </j:invokeStatic>
+	      <j:invokeStatic var="roundValue" className="java.lang.Math" method="round">
+	       <j:arg type = "double" value="${decValue}" />
+	      </j:invokeStatic>
+		  <j:set var="ramImMb" value="${roundValue}"/>
+		  <j:setProperties object="${device}" currentRAM="${ramImMb}"/>
+	     </swim:Catch>
+		</j:if>
+	   </j:if>
+	   <j:if test="${isCFLASHSet!=true &amp;&amp; currentFLASHRegex != null}">
+		<u:Match input="${line}"
+             regex="${currentFLASHRegex}"
+             vars="currentFLASH" trim="true"/>
+		<j:if test="${MATCHED}">
+	     <j:set var="isCFLASHSet" value="true"/>
+		 <swim:Catch var="NFException">
+		 <swim:Create type="LongNumber" returnVar="currentFLASH" value="${currentFLASH}"/>
+	      <swim:Create type="LongNumber" returnVar="mbVal" value="1024"/>
+		  <swim:Create type="Decimal" returnVar="dVal" value="${currentFLASH/mbVal}"/>
+	      
+          <j:invokeStatic var="decValue" className="java.lang.Math" method="ceil">
+	       <j:arg type = "double" value="${dVal}" />
+	      </j:invokeStatic>
+	      <j:invokeStatic var="roundValue" className="java.lang.Math" method="round">
+	       <j:arg type = "double" value="${decValue}" />
+	      </j:invokeStatic>
+		  <j:set var="flashInMb" value="${roundValue}"/>
+		  <j:setProperties object="${device}" currentFlash="${flashInMb}"/>
+	     </swim:Catch>
+		</j:if>
+	   </j:if>
+      </swim:For>
+	 </j:if>
+    </j:if>
+   </swim:Function>
+   
+   <swim:Function name="setBootPathAsAnyActivePackageName">
+   <j:if test="${device!= null &amp;&amp; device.oSName != null}">
+	<j:if test="${device.oSName=='IOS-XR'}">
+	 <j:set var="cmd" value="show install active"/>
+     <!--d:ExecuteCommand returnVar="result" command="${cmd}" ip ="${device.ipAddress}" refreshTime="3600000" label="show install active" storeResult="true"/-->
+	 <glib:executeCommand returnVar="result" cmd="${cmd}" deviceIpAddress="${device.ipAddress}" refreshTime="3600000" label="show install active"/>
+	 <j:choose>
+	  <j:when test="${result== null || result.getError() != null }">
+       
+	    
+      </j:when>
+	  <j:when test="${result.getSuccessStatus() &amp;&amp; result.getOutput() != null }">
+	   <swim:Create returnVar="activePackagefound" type="Boolean" value="false"/>
+	   <swim:Create returnVar="activePackageText" type="String" value="Packages:"/>
+	   <u:Split returnVar="lines" input="${result.getOutput()}"/>
+       <swim:For var="line" items="${lines}">
+	    <j:choose>
+	     <j:when test="${activePackagefound==false}">
+	      <su:contains returnVar="contains" on="${line}" token="${activePackageText}"/>
+	      <j:if test="${contains==true}">
+	       <swim:Create returnVar="activePackagefound" type="Boolean" value="true"/>
+	       <swim:Continue/>
+	      </j:if>
+	     </j:when>
+	     <j:otherwise>
+          <u:Trim returnVar ="line" on="${line}"/>
+		  <u:Match input="${line}" regex="^[\s]*(?:[^\s\:\/]+(?:\:|\/)+)*([^\s\/]+).*" vars="pack_Name"/>
+		  <j:if test="${MATCHED}">
+		   <j:setProperties object="${device}" bootPath="${pack_Name}"/>
+		   <swim:Break/>
+		  </j:if>
+		 </j:otherwise>
+		</j:choose>
+	   </swim:For>
+	  </j:when>
+     </j:choose>
+	</j:if>
+   </j:if>
+ </swim:Function>
+ 
+ <!-- ******************************************************************************************** 
+For given a map and key gets the data associated with the key.
+Global Variables:
+			None.
+Inputs:
+      onMap: the map.
+	  onkey: the key.
+Outputs:
+      Returns value associate if key is found in the map.
+***************************************************************************************************-->
+  <swim:Function name="getValueForKey">
+   <j:if test="${onMap!= null}">
+    <j:if test="${onMap!= null}">
+	 <u:ContainsKey returnVar="contains" on="${onMap}" param="${onKey}"/>
+	 <j:if test="${contains==true}">
+	  <u:Get returnVar ="val" on="${onMap}" param="${onKey}"/>
+      <swim:Return varName="${returnVar}" value="${val}"/>
+	 </j:if>
+    </j:if>
+   </j:if>
+   <swim:Return/>
+  </swim:Function>
+  
+  <!--
+   Inputs :
+    * cmd          : the command to execute
+	deviceIpAddress             : the device ip Address
+    refTime    : the refresh time  
+    reAttemptCount : the reAttempt count  
+  Output : 
+   returnVar : the variable on which the result will be returned   
+	 
+   
+  -->
+  <swim:Function name="executeShowCommand">
+   <swim:Log type="LOGERROR" message="executing show command : ${cmd}"/>
+   
+   <j:if test="${cmd != null &amp;&amp; deviceIpAddress != null}">
+     	
+	<!-- Initialize non mendatory values -->
+    <j:if test="${refTime == null}">
+     <swim:Create type="LongNumber" returnVar="refTime" value="0"/>
+	</j:if>
+	
+	<j:if test="${reAttemptCount == null}">
+     <swim:Create type="Number" returnVar="reAttemptCount" value="3"/>
+	</j:if>
+	<!-- done initialization-->
+	<j:choose>
+	 <j:when test="${reAttemptCount &gt; 0}">
+	  <swim:Catch var="ExecuteShowCommandException">
+	   <j:choose>
+	    <j:when test="${label != null}">
+	     <d:ExecuteShowCommand returnVar="rglt" command="${cmd}" refreshTime="${refTime}" ip="${deviceIpAddress}" label="${label}" storeResult="true"/>
+	    </j:when>
+		<j:otherwise>
+		<d:ExecuteShowCommand returnVar="rglt" command="${cmd}" refreshTime="${refTime}" ip="${deviceIpAddress}"/>
+		</j:otherwise>
+	   </j:choose>
+	  </swim:Catch>
+	  <j:choose>
+	    <j:when test="${ExecuteShowCommandException != null}">
+	    <!-- log infotmation -->
+	    <swim:Log type="LOGERROR" message="exception while executing command ${cmd} on ${deviceIpAddress} : ${ExecuteShowCommandException.getReason()}"/>
+		<j:choose>
+		 <j:when test="${reAttemptCount &gt; 1}">
+	      <u:Sleep time="30000"/>
+		  <glib:executeShowCommand returnVar="rglt" cmd="${cmd}" refTime="${refTime}" deviceIpAddress="${deviceIpAddress}" reAttemptCount="${reAttemptCount-1}"/>
+	      <swim:Return varName="${returnVar}" value="${rglt}"/>
+		 </j:when>
+		 <j:otherwise>
+		  <swim:Return varName="${returnVar}" value="${rglt}"/>
+		 </j:otherwise>
+		</j:choose>
+	   </j:when>
+	   <j:otherwise>
+	    <j:choose>
+	     <j:when test="${rglt == null &amp;&amp; reAttemptCount &gt; 1}">
+		  <u:Sleep time="30000"/>
+		  <swim:Log type="LOGERROR" message="Output of command execution result is null on ${deviceIpAddress}"/>
+	      <glib:executeShowCommand returnVar="rglt" cmd="${cmd}" refTime="${refTime}" deviceIpAddress="${deviceIpAddress}" reAttemptCount="${reAttemptCount-1}"/>
+		  <swim:Return varName="${returnVar}" value="${rglt}"/>
+	     </j:when>
+	     <j:when test="${rglt.getError() != null &amp;&amp; reAttemptCount &gt; 1}">
+	      <su:contains returnVar="contains" on="${rglt.getError()}" token="Read failed."/>
+		  <j:choose>
+		   <j:when test="${contains}">
+		    <u:Sleep time="30000"/>
+		    <swim:Log type="LOGERROR" message="Read failed for command ${cmd} on on ${deviceIpAddress}, reattempt ${reAttemptCount-1}."/>
+		    <glib:executeShowCommand returnVar="rglt" cmd="${cmd}" refTime="${refTime}" deviceIpAddress="${deviceIpAddress}" reAttemptCount="${reAttemptCount-1}"/>
+		    <swim:Return varName="${returnVar}" value="${rglt}"/>
+		   </j:when>
+		   <j:otherwise>
+		    <swim:Return varName="${returnVar}" value="${rglt}"/>
+		   </j:otherwise>
+		  </j:choose>
+	     </j:when>
+		 <j:otherwise>
+		  <swim:Return varName="${returnVar}" value="${rglt}"/>
+		 </j:otherwise>
+	    </j:choose>
+	   </j:otherwise>
+	   </j:choose>
+     </j:when>
+	 <j:otherwise>
+	  <swim:Log type="LOGERROR" message="All reattempts are over on ${deviceIpAddress}"/>
+	 </j:otherwise>
+	</j:choose>
+   </j:if>
+  </swim:Function>
+  
+  <!--
+   Inputs :
+    * cmd          : the command to execute
+	deviceIpAddress             : the device ip Address
+    refTime    : the refresh time  
+    reAttemptCount : the reAttempt count
+    lable : lable to be used if needs to store output 	
+  Output : 
+   returnVar : the variable on which the result will be returned   
+	 
+   
+  -->
+  <swim:Function name="executeCommand">
+   <swim:Log type="LOGERROR" message="executing show command : ${cmd}"/>
+   <j:if test="${cmd != null &amp;&amp; deviceIpAddress != null}">
+    
+	<!-- Initialize non mendatory values -->
+    <j:if test="${refTime == null}">
+     <swim:Create type="LongNumber" returnVar="refTime" value="0"/>
+	</j:if>
+	
+	<j:if test="${reAttemptCount == null}">
+     <swim:Create type="Number" returnVar="reAttemptCount" value="3"/>
+	</j:if>
+	<!-- done initialization-->
+	<j:choose>
+	 <j:when test="${reAttemptCount &gt; 0}">
+	  <swim:Catch var="ExecuteCommandException">
+	   <j:choose>
+	    <j:when test="${label != null}">
+	     <d:ExecuteCommand returnVar="rglt" command="${cmd}" refreshTime="${refTime}" ip="${deviceIpAddress}" label="${label}" storeResult="true"/>
+	    </j:when>
+		<j:otherwise>
+		<d:ExecuteCommand returnVar="rglt" command="${cmd}" refreshTime="${refTime}" ip="${deviceIpAddress}"/>
+		</j:otherwise>
+	   </j:choose>
+	  </swim:Catch>
+	  <j:choose>
+	   <j:when test="${ExecuteCommandException != null}">
+	    <!-- log infotmation -->
+	    <swim:Log type="LOGERROR" message="exception while executing command ${cmd} on on ${deviceIpAddress} : ${ExecuteCommandException.getReason()}"/>
+		<j:choose>
+		 <j:when test="${reAttemptCount &gt; 1}">
+		  <u:Sleep time="30000"/>
+	      <glib:executeCommand returnVar="rglt" cmd="${cmd}" refTime="${refTime}" deviceIpAddress="${deviceIpAddress}" reAttemptCount="${reAttemptCount-1}"/>
+	      <swim:Return varName="${returnVar}" value="${rglt}"/>
+		 </j:when>
+		 <j:otherwise>
+		  <swim:Return varName="${returnVar}" value="${rglt}"/>
+		 </j:otherwise>
+		 </j:choose>
+	   </j:when>
+	   <j:otherwise>
+	    <j:choose>
+	     <j:when test="${rglt == null}">
+		  <swim:Log type="LOGERROR" message="Output of command execution result is null on ${deviceIpAddress}"/>
+	      <!--glib:executeCommand returnVar="rglt" cmd="${cmd}" refTime="${refTime}" deviceIpAddress="${deviceIpAddress}" reAttemptCount="${reAttemptCount-1}"/-->
+		  <swim:Return varName="${returnVar}" value="${rglt}"/>
+	     </j:when>
+	     <j:when test="${rglt.getError() != null &amp;&amp; reAttemptCount &gt; 1}">
+	      <su:contains returnVar="contains" on="${rglt.getError()}" token="Read failed."/>
+		  <j:choose>
+		   <j:when test="${contains}">
+		    <u:Sleep time="30000"/>
+		    <swim:Log type="LOGERROR" message="Read failed for command ${cmd} on on ${deviceIpAddress}, reattempt ${reAttemptCount-1}."/>
+		    <glib:executeCommand returnVar="rglt" cmd="${cmd}" refTime="${refTime}" deviceIpAddress="${deviceIpAddress}" reAttemptCount="${reAttemptCount-1}"/>
+		    <swim:Return varName="${returnVar}" value="${rglt}"/>
+		   </j:when>
+		   <j:otherwise>
+		    <swim:Return varName="${returnVar}" value="${rglt}"/>
+		   </j:otherwise>
+		  </j:choose>
+	     </j:when>
+		 <j:otherwise>
+		  <swim:Return varName="${returnVar}" value="${rglt}"/>
+		 </j:otherwise>
+	    </j:choose>
+	   </j:otherwise>
+	   </j:choose>
+     </j:when>
+	 <j:otherwise>
+	  <swim:Log type="LOGERROR" message="All reattempts are over on ${deviceIpAddress}"/>
+	 </j:otherwise>
+	</j:choose>
+   </j:if>
+  </swim:Function>
+  </swim:Library>
+</j:jelly>

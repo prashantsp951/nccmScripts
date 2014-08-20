@@ -1,0 +1,380 @@
+<?xml version="1.0"?>
+<!--
+Library script with string realted utility functions.
+-->
+<j:jelly xmlns:j="jelly:core"
+         xmlns:swim="jelly:com.pari.jelly.engine.tags.languages.LanguageTagLibrary">
+		 
+ <!-- The meta data information about the script file  -->		 
+ <swim:MetaDataValues>
+  <metaDataValue>
+   <metaData>
+    <name>Id</name>
+    <value>_Sys_String_Utility_Library_OI</value>
+   </metaData>
+   <metaData>
+    <name>Title</name>
+    <value>System Defined Library Scripts for String related operations_OI</value>
+   </metaData>
+   <metaData>
+    <name>Type</name>
+	<value>Lib</value>
+   </metaData>
+   <metaData>
+	<name>Version</name>
+	<value>1.0</value>
+   </metaData>
+  </metaDataValue>
+ </swim:MetaDataValues>
+ <!-- String utility library defining starts here -->
+ <swim:Library uri="StringUtility">
+
+
+  <!--***************************************************************************************************
+  Returns a new string that is a substring of this string. The
+  substring begins with the character at the specified index and
+  extends upto toindex-1 if provied otherwise extends upto the end of this string.
+  
+  Global Variables:
+   None.
+  Inputs:
+   * on 	: String on which substring is expected.
+   * from	: String representing begin index
+   * to		: Optional param representing lastIndex for substring (excluding) if passed,otherwise substring extends upto end of the passed string. 
+  Outputs:
+   the substring  
+  Throws: 
+   Exception in either of below condition.
+    from index is not an integer number.
+	to index (is passed) is not an integer number.
+	Given on string is null.
+  ********************************************************************************************************-->
+  <swim:Function name="substring">
+   <j:choose>
+    <j:when test="${on != null &amp;&amp; returnVar != null}">
+	 <j:choose>
+	  <j:when test="${from != null}">
+	   <swim:Catch var="exception">
+	   <j:choose>
+	    <j:when test="${to!=null}">	
+	     <swim:Create returnVar="lastIndex" type="Number" value ="${to}"/>
+		 <swim:Create returnVar="firstIndex" type="Number" value ="${from}"/>
+		 <j:invoke var="invokeResult" on="${on}" method="substring">
+		  <j:arg type="java.lang.Integer" value="${firstIndex}" />
+		  <j:arg type="java.lang.Integer" value="${lastIndex}" />
+		 </j:invoke>
+		 <swim:Return varName="${returnVar}" value="${invokeResult}" />
+	    </j:when>
+	    <j:otherwise>
+	     <swim:Create returnVar="firstIndex" type="Number" value ="${from}"/>
+		 <j:invoke var="invokeResult" on="${on}" method="substring">
+		  <j:arg type="java.lang.Integer" value="${firstIndex}" />
+		 </j:invoke>
+		 <swim:Return varName="${returnVar}" value="${invokeResult}" />
+	    </j:otherwise>
+	   </j:choose>
+	  </swim:Catch>
+	  <j:if test="${exception!=null}">
+	   <swim:Throw message="Exception while 'substring' function call: ${exception}"/>
+	  </j:if>
+	 </j:when>
+     <j:otherwise>
+      <swim:Throw message="For 'substring' function 'from' is mendatory parameter."/>
+     </j:otherwise>
+     </j:choose>
+    </j:when>
+    <j:otherwise>
+     <j:if test="${On == null}">
+      <swim:Throw message="For 'substring' function 'on' is mendatory parameter."/>
+     </j:if>
+    </j:otherwise>
+   </j:choose>
+  </swim:Function>
+
+  <!--***********************************************************************************************************
+  Returns indexOf token string in this string.
+  The index searching starts from lhs and index of first matching is returned.
+  If start index is passed matching starts from given start index.
+  
+  Global Variables:
+   None.
+  Inputs:
+   * on 		: String on which indexOf given token is expected.
+   * token		: Token string whose index needs to be found.
+   * startIndex	: Optional param representing Index from which token seaching should start if passed,
+                  otherwise searching happens from start of the  string
+  Outputs:
+	if token string is found return the index of token string, otherwise -1.
+  Throws:
+   Exception is thrown in either of following condition.
+	* Given string is null.
+	* token is null
+	* startIndex is not a integer number.
+  ****************************************************************************************************************-->
+  <swim:Function name="indexOf">
+   <j:choose>
+    <j:when test="${on != null &amp;&amp; returnVar != null &amp;&amp; token != null}">
+	 <swim:Catch var="numberFormatException">
+	  <j:choose>
+	   <j:when test="${startIndex != null}">
+	    <swim:Create returnVar="stIndex" type="Number" value ="${startIndex}"/>
+	    <j:invoke var="invokeResult" on="${on}" method="indexOf">
+	     <j:arg type="java.lang.String" value="${token}" />
+	     <j:arg type="java.lang.Integer" value="${stIndex}" />
+	    </j:invoke>
+	    <swim:Return varName="${returnVar}" value="${invokeResult}" />
+	   </j:when>
+	   <j:otherwise>
+	    <j:invoke var="invokeResult" on="${on}" method="indexOf">
+	     <j:arg type="java.lang.String" value="${token}"/>
+	    </j:invoke>
+	    <swim:Return varName="${returnVar}" value="${invokeResult}" />
+	   </j:otherwise>
+      </j:choose>
+     </swim:Catch>
+	 <j:if test="${numberFormatException} !=null">
+	  <swim:Throw message="Error while 'indexOf' function call : ${numberFormatException}."/>
+	  <swim:Return/>
+	 </j:if>
+    </j:when>
+    <j:otherwise>
+     <j:if test="${on == null}">
+      <swim:Throw message="For 'indexOf' function on is mendatory parameter."/>
+     </j:if>
+     <j:if test="${token == null}">
+      <swim:Throw message="For 'indexOf' function Token is mendatory parameter."/>
+     </j:if>
+    </j:otherwise>
+   </j:choose>
+  </swim:Function>
+
+  <!-- ********************************************************************************************************************
+  Checks if given lhs string and rhs strings are equal. By default the comparision is case sensetive. 
+  And can be ignored if optional parameter ignoreCase is passed with value as true.
+  
+  Global Variables:
+   None.
+  Inputs:
+   * lhs 		: String on which indexOf given token is expected.
+   * rhs		: Token string whose index needs to be found.
+   * ignoreCase	: boolean indicating if the case should be ignored.
+  Outputs:
+	true if the lsg string and rhs string are equal,otherwise false.
+  Throws :
+   Exception if lsh input is null or ignoreCase input is not null and has a differnt value then 'true' or 'false'.
+  ***************************************************************************************************************************-->
+  <swim:Function name="isEqual">
+   <j:choose>
+    <j:when test="${lhs != null}">
+	 <j:choose>
+	  <j:when test="${ignoreCase != null}">
+	   <j:choose>
+	    <j:when test="${ignoreCase==true}">
+		 <j:invoke var="invokeResult" on="${lhs}" method="equalsIgnoreCase">
+		  <j:arg type="java.lang.String" value="${rhs}" />
+		 </j:invoke>
+		 <swim:Return varName="${returnVar}" value="${invokeResult}"/>
+		</j:when>
+		<j:when test="${ignoreCase==false}">
+		 <j:invoke var="invokeResult" on="${lhs}" method="equals">
+		  <j:arg type="java.lang.String" value="${rhs}" />
+		 </j:invoke>
+		 <swim:Return varName="${returnVar}" value="${invokeResult}"/>
+	    </j:when>
+		<j:otherwise>
+		 <swim:Throw message="ignoreCase Input for method 'isEqual' is '${ignoreCase}', expected 'true' or 'false'"/>
+		</j:otherwise>
+	   </j:choose>
+	  </j:when>
+	  <j:otherwise>
+	   <j:invoke var="invokeResult" on="${lhs}" method="equals">
+	    <j:arg type="java.lang.String" value="${rhs}" />
+	   </j:invoke>
+	   <swim:Return varName="${returnVar}" value="${invokeResult}"/>
+	  </j:otherwise>
+	 </j:choose>
+	</j:when>
+	<j:otherwise>
+	 <swim:Throw message="Input param 'lhs' is null for 'isEqual' method call"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+  <!--*********************************************************************************************************
+  Checks if given string contains the 'token' string.
+  Global Variables:
+   None.
+  Inputs:
+   * on     : string on which token containment needs to be checked.
+   * token	: the token string which need s to be checked.
+  Outputs :
+	true if given string contains token string, false otherwise
+  Throws :
+   Exception if given string is null.
+  ***********************************************************************************************************-->
+  <swim:Function name="contains">
+   <j:choose>
+    <j:when test="${on != null}">
+	 <j:invoke var="invokeResult" on="${on}" method="contains">
+	  <j:arg type="java.lang.String" value="${token}" />
+	 </j:invoke>
+	 <swim:Return varName="${returnVar}" value="${invokeResult}"/>
+	</j:when>
+	<j:otherwise>
+	 <swim:Throw message="Input 'on' is null for method 'contains'"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+
+  <!--*********************************************************************************************
+  Replaces each substring of given string that matches the given regular expression with the
+  given replacement.
+  
+  Global Variables:
+   None.
+  Inputs :
+   * on 			: String on which the replacement needs to be done.
+   * regex 			: the regular expression for substring finding and replacing.
+   * replacement	: the replacement string.
+  Outputs: 
+	 the replaced string.
+  Throws:
+   Exception is thrown under following scenario
+    If 'on' string  param is null.
+	If 'regex' string param is null.
+  ***********************************************************************************************-->
+  <swim:Function name="replaceAll">
+   <j:choose>
+	<j:when test="${on != null &amp;&amp; regex != null}">
+	 <j:invoke var="invokeResult" on="${on}" method="replaceAll">
+	  <j:arg type="java.lang.String" value="${regex}" />
+	  <j:arg type="java.lang.String" value="${replacement}" />
+	 </j:invoke>
+	 <swim:Return  varName="${returnVar}" value="${invokeResult}"/>
+	</j:when>
+	<j:otherwise>
+	 <j:choose>
+	  <j:when test="${on == null}">
+		<swim:Throw message="Input 'on' is null for replaceAll method call"/>
+	  </j:when>
+	  <j:otherwise>
+	   <swim:Throw message="Input 'regex' is null for replaceAll method call"/>
+	  </j:otherwise>
+     </j:choose>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+
+  <!-- ***********************************************************************
+  Provides lowercase string for given string
+  
+  Global Variables:
+   None.
+  Input:
+   * on :String which whose lowercase string needed.
+  Outputs:
+   lower case equivalent of given string.
+  Throws:
+   Exception if the given string is null.
+  ***************************************************************************-->
+  <swim:Function name="toLowerCase">
+   <j:choose>
+    <j:when test="${on !=null}">
+	 <j:invoke var="invokeResult" on="${on}" method="toLowerCase"/>
+	 <swim:Return  varName="${returnVar}" value="${invokeResult}"/>
+    </j:when>
+    <j:otherwise>
+     <swim:Throw message = "Given string is null for 'toLowerCase' method call."/>
+    </j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+ <!-- ***********************************************************************
+  Provides upeercase string for given string
+  
+  Global Variables:
+   None.
+  Input:
+   * on :String which whose uppercase string needed.
+  Outputs:
+   upper case equivalent of given string.
+  Throws:
+   Exception if the given string is null.
+  ***************************************************************************-->
+  <swim:Function name="toUpperCase">
+   <j:choose>
+    <j:when test="${on !=null}">
+	 <j:invoke var="invokeResult" on="${on}" method="toUpperCase"/>
+	 <swim:Return  varName="${returnVar}" value="${invokeResult}"/>
+    </j:when>
+    <j:otherwise>
+     <swim:Throw message = "Given string is null for 'toUpperCase' method call."/>
+    </j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+  <!--***********************************************************************************************************
+  Returns lastindexOf token string in this string.
+  The index searching starts from rhs and index of first matching is returned.
+  
+  Global Variables:
+   None.
+  Inputs:
+   * on 		: String on which indexOf given token is expected.
+   * token		: Token string whose index needs to be found.
+   
+        Outputs:
+              if token string is found return the index of token string, otherwise -1.
+        Throws:
+         Exception is thrown in either of following condition.
+              * Given string is null.
+              * token is null
+        ****************************************************************************************************************-->
+        <swim:Function name="lastIndexOf">
+            <j:choose>
+                <j:when test="${on != null &amp;&amp; returnVar != null &amp;&amp; token != null}">
+                    <j:invoke var="invokeResult" on="${on}" method="lastIndexOf">
+                        <j:arg type="java.lang.String" value="${token}"/>
+                    </j:invoke>
+                    <swim:Return varName="${returnVar}" value="${invokeResult}" />
+                </j:when>
+                <j:otherwise>
+                    <j:if test="${on == null}">
+                        <swim:Throw message="For 'lastIndexOf' function on is mendatory parameter."/>
+                    </j:if>
+                    <j:if test="${token == null}">
+                        <swim:Throw message="For 'lastIndexOf' function Token is mendatory parameter."/>
+                    </j:if>
+                </j:otherwise>
+            </j:choose>
+        </swim:Function>
+  
+        <!--*********************************************************************************************************
+        Compares given string lexically with rhs string.
+        Global Variables:
+         None.
+        Inputs:
+         * on     : string on which token containment needs to be checked.
+         * rhs	: the token string which need s to be checked.
+        Outputs :
+              + if given string is lexically greater, - if lexically smaller, 0 if equal
+        Throws :
+         Exception if given string is null.
+        ***********************************************************************************************************-->
+        <swim:Function name="compareTo">
+            <j:choose>
+                <j:when test="${on != null}">
+                    <j:invoke var="invokeResult" on="${on}" method="compareTo">
+                        <j:arg type="java.lang.String" value="${rhs}" />
+                    </j:invoke>
+                    <swim:Return varName="${returnVar}" value="${invokeResult}"/>
+                </j:when>
+                <j:otherwise>
+                    <swim:Throw message="Input 'on' is null for method 'compareTo'"/>
+                </j:otherwise>
+            </j:choose>
+        </swim:Function>
+
+  
+    </swim:Library>
+</j:jelly>

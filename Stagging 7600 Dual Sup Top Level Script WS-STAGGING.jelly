@@ -1,0 +1,220 @@
+<?xml version="1.0"?>
+<!--
+Customized Top level script for WS-MOP-7600 
+-->
+<j:jelly xmlns:j="jelly:core"
+         xmlns:swim="jelly:com.pari.jelly.engine.tags.languages.LanguageTagLibrary"
+         xmlns:u="jelly:com.pari.jelly.engine.tags.utility.UtilityTagLibrary"
+         xmlns:d="jelly:com.pari.jelly.engine.tags.deviceCommunication.DeviceTagLibrary" 
+         xmlns:su="StringUtility"
+         xmlns:osLibFunctionCall="osLibFunction">
+ 
+    <!-- Import Libraries -->
+    <swim:ScriptImport id="_Sys_String_Utility_Library_OI"/>
+    <swim:ScriptImport id="_WS_7600_MOP_OS_LIB_WS_STAGGING_OI"/>
+
+    <!-- End Imports -->
+ 
+    <!-- The meta data information about WS-MOP-7600 top level script  -->
+    <swim:MetaDataValues>
+        <metaDataValue>
+            <metaData>
+                <name>Id</name>
+                <value>_WS_7600_DUAL_STAGING_MOP_Top_WS_STAGGING_OI</value>
+            </metaData>
+            <metaData>
+                <name>Title</name>
+                <value>Stagging 7600 Dual Sup Top Level Script WS STAGGING_OI</value>
+            </metaData>
+            <metaData>
+                <name>Type</name>
+                <value>Top</value>
+            </metaData>
+            <metaData>
+                <name>Version</name>
+                <value>20140116.0000</value>
+            </metaData>
+            <metaData>
+                <name>VersionSelRef</name>
+                <value>IOS</value>
+            </metaData>
+        </metaDataValue>
+    </swim:MetaDataValues>
+
+    <!-- Begin main code -->
+ 
+    <!-- Initialize device related information -->
+ 
+		   
+    <j:set var="fileSystemsActive" value="unknown"/>
+    <j:set var="freeSpace_Active" value="unknown"/>
+    <j:set var="fileSystemsStandby" value="unknown"/>
+    <j:set var="freeSpace_Standby" value="unknown"/> 
+    <swim:Create returnVar ="md5Map" type="Map"/>
+    <swim:Create returnVar ="fpdMap" type="Map"/>
+    <osLibFunctionCall:initializeImageMD5Map returnVar="md5Map" />
+    <osLibFunctionCall:initializeFpdMap returnVar="fpdMap" />	
+    <!-- getting the fpdImageName upfront -->
+    <u:Get returnVar="fpdImageName" on="${fpdMap}" param="${imageName}"/>  
+    <osLibFunctionCall:initializeBasicData device="${Device}"/>
+    <osLibFunctionCall:copyRunningConfigToSupBootdisk/> 
+    <osLibFunctionCall:checkRspHealth/> 
+    <!-- Check if its okey to proceed further-->
+    <j:if test="${engine_Local_Stage.complete!=true}">
+        <!-- MOP : Show Commands Checklist -->
+        <!-- <osLibFunctionCall:ShowCommandsChecklist Device="${Device}" isPre="true"/> -->                                                   
+        <!--
+         @SuggestEdit  
+        -->
+        <!-- MOP : Collect Core Dump From RP -->   
+        <!-- comment out this part in the vent the ftp server in not working-->
+        <!--  <d:getTftpIp returnVar="retIp" ip="${Device.ipAddress}"/> 	
+       <osLibFunctionCall:collectCoreDumpFromRP Device="${Device}" ip="${retIp}" uName="${Protocol_User}" pass="${Protocol_Password}"/>  
+        uncomment the above function if ftp is working fine -->
+        
+        
+        <j:if test="${engine_Local_Stage.complete!=true}">
+            
+            <!-- MOP : Prerequisites -->
+            <!--osLibFunctionCall:prerequisites Device="${Device}"/-->
+            <j:if test="${engine_Local_Stage.complete!=true}">
+                <!-- System defined pre install check if not interested please comment -->
+                <!--
+                <osLibFunctionCall:preInstallChecks/>
+                -->
+                <j:if test="${engine_Local_Stage.complete!=true}">
+                    <!-- System defined current image check if not interested please comment -->
+        
+                    <osLibFunctionCall:checkCurrentImage/>
+                    <j:if test="${engine_Local_Stage.complete!=true}">
+                        <j:if test="${FILE_TYPE!=null}">
+                            <!--
+                            -->
+                            <j:if test="${engine_Local_Stage.complete!=true}">
+                                <!--MOP : Upgrade procedure: 1 and 2, handles copy files and make room-->
+                                <!-- COPY FILE TO ACTIVE RP'S DISK -->
+        
+                                <osLibFunctionCall:copyFiles FileSystems ="${fileSystemsActive}" FREE_SPACE_NAME="${freeSpace_Active}" deleteSupported="false"/>
+                                <j:if test="${engine_Local_Stage.complete!=true}">
+                                    <j:choose>
+                                        <j:when test="${filePaths !=null}">
+                                            <u:Get returnVar="activeFilePath" on="${filePaths}" param="${Image.name}"/>
+                                            <swim:JobLog ip="${Device.ipAddress}" message="Image file path ${activeFilePath}"/>
+                                            <u:Match input="${activeFilePath}" regex="([^\/]+)\/\S*" vars="activeDriveName"/>
+                                            <j:if test="${MATCHED}">
+                                                <j:set var="activeDrive" value="${activeDriveName}"/>
+                                                <j:set var="standbyDrive" value="slave${activeDriveName}"/>
+                                                <swim:Create type="Set" returnVar="fileSystemsStandby"/>
+                                                <u:Add on="${fileSystemsStandby}" param="slave${activeDriveName}"/>
+                                            </j:if> 
+                                            <swim:JobLog ip="${Device.ipAddress}" message="checking fpd image on master with stagging top level script named ${Image}"/>
+                                            <osLibFunctionCall:makeRoomAndCopyFileInternal fromPath="${activeDrive}" toPath="${standbyDrive}" Image="${Image}" deleteSupported="false"/>                                                      
+                                            <!--  -->
+                                            <j:choose>
+                                                <j:when test="${filePaths !=null}">
+                                                    <u:Get returnVar="standbyFilePath" on="${filePaths}" param="${Image.name}"/>
+                                                    <swim:JobLog ip="${Device.ipAddress}" message="Image file path ${standbyFilePath}"/>
+                                                </j:when>
+                                                <j:otherwise>
+                                                    <swim:JobStatus result="Fail" message="Staging failed with unknown reason."/>
+                                                </j:otherwise>
+                                            </j:choose>
+                                            <!--  -->
+                                        </j:when>
+                                        <j:otherwise>
+                                            <swim:JobStatus result="Fail" message="Staging failed with unknown reason."/>
+                                        </j:otherwise>
+                                    </j:choose>
+                                </j:if>
+                            </j:if>
+                            <!--MOP : Upgrade procedure: 3, verify copied images-->
+                            <j:if test="${engine_Local_Stage.complete!=true}">
+                                <osLibFunctionCall:verifyImageAt fileAtPath="${activeDrive}/${Image.name}"/>
+                                <osLibFunctionCall:verifyImageAt fileAtPath="${activeDrive}/${fpdImageName}"/>
+                                <j:if test="${engine_Local_Stage.complete!=true}">			
+                                
+                                    <osLibFunctionCall:getNameFromFullName returnVar="imageName" fname="${Image.name}" />
+                                    <u:ContainsKey returnVar="contains" on="${md5Map}" param="${imageName}"/>
+                                    <!--                <swim:JobLog ip="${Device.ipAddress}" message="The image name after getNameFromFullName is ${imageName}"/>-->
+                                    <j:if test="${contains}">
+                                        <osLibFunctionCall:md5Verification fileAtPath="${activeDrive}/${Image.name}" fname="${Image.name}"/>
+                                        <swim:JobLog ip="${Device.ipAddress}" message="MD5 successful"/>
+                                    </j:if>
+                                    <j:if test="${contains==false}">
+                                        <swim:JobLog ip="${Device.ipAddress}" message="MD5 check skipped"/>
+                                    </j:if>
+                                    <swim:JobLog ip="${Device.ipAddress}" message="checking md5 for fpd"/>
+                                    <u:ContainsKey returnVar="contains" on="${md5Map}" param="${fpdImageName}"/>
+                                    <j:if test="${contains}">
+                                        <osLibFunctionCall:md5Verification fileAtPath="${activeDrive}/${fpdImageName}" fname="${fpdImageName}"/>
+                                        <swim:JobLog ip="${Device.ipAddress}" message=" FPD MD5 successful"/>
+                                    </j:if>
+                                    <j:if test="${contains==false}">
+                                        <swim:JobLog ip="${Device.ipAddress}" message="FPD MD5 check skipped"/>
+                                    </j:if>
+                                    <j:if test="${engine_Local_Stage.complete!=true}">
+                                        <osLibFunctionCall:verifyImageAt fileAtPath="${standbyDrive}/${Image.name}"/>
+                                        <osLibFunctionCall:verifyImageAt fileAtPath="${standbyDrive}/${fpdImageName}"/>
+                                        <j:if test="${engine_Local_Stage.complete!=true}">	   
+        
+                                            <osLibFunctionCall:getNameFromFullName returnVar="imageName" fname="${Image.name}"/> 
+                                            <!--<swim:JobLog ip="${Device.ipAddress}" message="The image name after getNameFromFullName is ${imageName}"/>-->
+                                            <u:ContainsKey returnVar="contains" on="${md5Map}" param="${imageName}"/>
+                                            <j:if test="${contains}">
+                                                <osLibFunctionCall:md5Verification fileAtPath="${standbyDrive}/${Image.name}" fname="${Image.name}"/>
+                                                <swim:JobLog ip="${Device.ipAddress}" message="MD5 successful"/>
+                                            </j:if>
+                                            <j:if test="${contains==false}">
+                                                <swim:JobLog ip="${Device.ipAddress}" message="MD5 check skipped"/>
+                                            </j:if>
+                                            <swim:JobLog ip="${Device.ipAddress}" message="checking md5 for fpd"/>
+                                            <u:ContainsKey returnVar="contains" on="${md5Map}" param="${fpdImageName}"/>
+                                            <j:if test="${contains}">
+                                                <osLibFunctionCall:md5Verification fileAtPath="${standbyDrive}/${fpdImageName}" fname="${fpdImageName}"/>
+                                                <swim:JobLog ip="${Device.ipAddress}" message=" FPD MD5 successful"/>
+                                            </j:if>
+                                            <j:if test="${contains==false}">
+                                                <swim:JobLog ip="${Device.ipAddress}" message="FPD MD5 check skipped"/>
+                                            </j:if>
+                                            <!--MOP: Upgrade procedure: point 6: configure boot system -->
+                                            <!--osLibFunctionCall:configureBootSystem imageFullNameWithPath="${activeDrive}/${Image.name}"/-->
+                                            <j:if test="${engine_Local_Stage.complete!=true}">
+                                                <!--MOP: Upgrade procedure: point 7: divert trafic -->
+                                                <!--osLibFunctionCall:divertTrafic/-->
+                                                <j:if test="${engine_Local_Stage.complete!=true}">
+                                                    <!--osLibFunctionCall:writeMem/-->
+                                                    <j:if test="${engine_Local_Stage.complete!=true}">
+                                                        <!--osLibFunctionCall:verifyBootVeriables bootPathSet="${activeDrive}/${Image.name}"/-->
+                                                        <j:if test="${engine_Local_Stage.complete!=true}">
+                                                            <!-- MOP: Upgrade procedure : point 10: identify supervisor -->
+                                                            <!--j:set var="activeModuleValue" value="-1"/-->
+                                                            <j:set var="standByModuleValue" value="-1"/>
+                                                            <!--osLibFunctionCall:identifySupervisorModules/-->
+                                                            <j:if test="${engine_Local_Stage.complete!=true}">
+                                                                <!--osLibFunctionCall:redundancyForceSwitchover/-->
+                                                                <j:if test="${engine_Local_Stage.complete!=true}">
+                                                                    <!--u:Sleep time="180000"/-->
+                                                                    <!--osLibFunctionCall:postInstallChecks/-->
+                                                                    <j:if test="${engine_Local_Stage.complete!=true}">
+                                                                        <!--osLibFunctionCall:divertTrafic isNo="true"/-->
+                                                                        <j:if test="${engine_Local_Stage.complete!=true}">
+                                                                            <!-- <osLibFunctionCall:ShowCommandsChecklist Device="${Device}" isPre="false"/> -->
+                                                                        </j:if>
+                                                                    </j:if>
+                                                                </j:if>
+                                                            </j:if>
+                                                        </j:if>
+                                                    </j:if>
+                                                </j:if>
+                                            </j:if>
+                                        </j:if>
+                                    </j:if>
+                                </j:if>
+                            </j:if>
+                        </j:if>
+                    </j:if>
+                </j:if>
+            </j:if>
+        </j:if> 
+    </j:if> 
+</j:jelly>

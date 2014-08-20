@@ -1,0 +1,3874 @@
+<?xml version="1.0"?>
+<!--
+Librbary script with utility functions to handle IOS issu image upgrade
+-->
+<j:jelly xmlns:j="jelly:core"
+         xmlns:swim="jelly:com.pari.jelly.engine.tags.languages.LanguageTagLibrary"
+         xmlns:u="jelly:com.pari.jelly.engine.tags.utility.UtilityTagLibrary"
+         xmlns:d="jelly:com.pari.jelly.engine.tags.deviceCommunication.DeviceTagLibrary"
+		 xmlns:su="StringUtility"
+		 xmlns:functionCall="osLibFunction"
+		 xmlns:deletelib="deletelib" xmlns:glib="glib">
+ 
+ <!-- The meta data information about the WS-MOP-7600 os level library script  -->
+ <swim:MetaDataValues>
+  <metaDataValue>
+   <metaData>
+    <name>Id</name>
+	<value>_WS_7600_MOP_OS_LIB_WS_STAGGING_OI</value>
+   </metaData>
+   <metaData>
+	<name>Title</name>
+	<value>7600 Dual Sup OS library script WS-STAGGING_OI</value>
+   </metaData>
+   <metaData>
+	<name>Type</name>
+	<value>Lib</value>
+   </metaData>
+   <metaData>
+	<name>Version</name>
+	<value>20140312.0000</value>
+   </metaData>
+  </metaDataValue>
+ </swim:MetaDataValues>
+	
+ <!-- Import Libraries -->
+ <swim:ScriptImport id="_Sys_String_Utility_Library_OI"/>
+ <swim:ScriptImport id="_WS_7600_DUAL_Delete_Support_Lib"/>
+ <swim:ScriptImport id="_WS_7600_DUAL_Global_Lib"/>
+ 
+ <!-- End Imports-->
+ 
+ 
+ <!--  Library for defining os level function -->
+ <swim:Library uri="osLibFunction">
+ 
+ <!--
+ Initializes basic data needed during startup of script execution.
+	Initializes device related information into device bean.
+	
+ Inputs:
+	* device: the device bean under which valuses will be initialized.
+ Outputs:
+	NONE
+ Expectation :
+    1) Logs appropriate message during initialization.
+    2) If data initialization fails sets internal state to complete with appropriate details of failure. 
+ -->
+ 
+ <swim:Function name="initializeBasicData">
+  <swim:JobLog ip="${Device.ipAddress}"
+            message="Starting to initialize basic data"/>
+  <j:catch var="deviceInitializationException">
+   <!--  Populate device Info -->
+   <functionCall:initializeDeviceRelatedInformation device="${Device}"/>
+  </j:catch>
+  
+  <!-- Check if there was any exception while populating device information.-->
+  <j:choose>
+   <j:when test="${deviceInitializationException != null}">
+    <swim:JobLog ip="${Device.ipAddress}"
+            message="ERROR : ${deviceInitializationException.getReason()}"/>
+    <swim:JobStatus result="Fail" message="Unable to initialize device related information"/>
+  </j:when>
+  <j:otherwise>
+   <!-- Get Below information
+	       1) bootDriveName for active rp as fileSystemsActive.
+		   2) active rp's bootDrive and free space as "freeSpace_Active" map.
+		   3) bootDriveName for standby rp as fileSystemsStandBy.
+		   4) standby rp's bootDrive and free space as "freeSpace_StandBy" map.
+	-->
+	  
+	<j:catch var="Exception">
+     <!-- Calculate fress spaces for active RP -->
+	 <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : getting fileSystemsActive"/>
+     <functionCall:getRouteProcessorFileSystems ipAddress ="${Device.ipAddress}" forActive="true" returnVar="fileSystemsActive"/>
+	 <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : got fileSystemsActive as ${fileSystemsActive}"/>
+	 <j:set var="fileSystemsActive" value="${fileSystemsActive}" scope="parent"/>
+	 <!--j:set var="freeSpace_Standby" value="${fileSystemsActive}" scope="parent"/-->
+    </j:catch>
+       
+	<!--Check if there was any exception during getting file systems for active RP-->
+    <j:if test="${Exception != null}">
+     <swim:Log type="LOGERROR"
+            message="Exception while finding drives for active RP on device: ${Device.ipAddress} ${Exception}"/>
+     <swim:JobLog ip="${Device.ipAddress}"
+            message="Exception while finding drives for active RP on device ${Exception.getReason()}. Continuing anyways.."/>
+    </j:if>
+	  
+	<!-- Get free space information of dir's of active RP's-->
+	<j:catch var="Exception">
+	 <functionCall:getFreeSpacesActive ipAddress ="${Device.ipAddress}" returnVar="freeSpace_Active"/>
+	 <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : got freeSpace_Active as ${freeSpace_Active}"/>
+	 <j:set var="freeSpace_Active" value="${freeSpace_Active}" scope="parent"/>
+	 <j:set var="freeSpace_Standby" value="${freeSpace_Active}" scope="parent"/>
+    </j:catch>
+	  
+	<!--Check if there was any exception during getting file systems for active RP-->
+    <j:if test="${Exception != null}">
+     <swim:Log type="LOGERROR"
+            message="Exception while finding free space for active RP on device: ${Device.ipAddress} ${Exception}"/>
+     <swim:JobLog ip="${Device.ipAddress}"
+            message="Exception while finding free spaces for active RP on device ${Exception.getReason()}. Continuing anyways.."/>
+    </j:if> 
+
+    <swim:JobLog ip="${Device.ipAddress}" message="Completed  initialization of basic data"/>
+   </j:otherwise>
+  </j:choose>
+ </swim:Function>
+ 
+ <!--
+  Initializes device related information by using different commands like 'show version' and 'show file system'
+   to the device bean object provided as input
+   
+  Inputs:
+	* device: the device bean object
+  Throws:
+	Exception if device related information initialization fails
+  -->
+ <swim:Function name="initializeDeviceRelatedInformation">
+  <j:choose>
+  <j:when test="${device!= null &amp;&amp; device.oSName != null}">
+   <swim:JobLog ip="${Device.ipAddress}"
+            message="Starting to initialize device related information like version,build path,current ram and current flash etc."/>
+   <!-- 
+   Define regex
+   -->
+   <su:isEqual returnVar="isIOS" lhs="IOS" rhs="${device.oSName}"/>
+   
+   <j:set var="isVersionSet" value="false"/>
+   <j:set var="isBuildPathSet" value="false"/>
+   <j:set var="isCRAMSet" value="false"/>
+   <j:set var="isCFLASHSet" value="false"/>
+   <j:choose>
+    <j:when test="${isIOS==true}">
+	<j:set var="versionRegex" value="^.*Version\s+([^,\s\[]+),?\s*.*$"/>
+    <j:set var="buildPathRegex" value="^.*[sS]ystem image file is:?[\s]+\&quot;?((?:[^\s\:\/]+(?:\:|\/)+)*[^\&quot;\s\/]+)\&quot;?.*"/>
+    <j:set var="currentRAMRegex" value=".*[C|c]isco.*\swith\s(\d+)\S(?:\/(\d+))?.*bytes of memory.*"/>
+    <!--j:set var="currentFLASHRegex" value="(\d+)\S\s+bytes of.*non-volatile conf.*"/ -->
+	<swim:Catch var="FreeSpaceException">
+	 <!-- LET ME GET THE FILE SYSTEM INFORMATION TO DETERMINE FREE SPACES -->
+     <glib:getCurrentFlash device="${device}" returnVar="currentFLASH"/>
+	 <j:if test="${currentFLASH != null}">
+	  <j:setProperties object="${device}" currentFlash="${currentFLASH}"/>
+	 </j:if>
+    </swim:Catch>
+	<j:if test="${FreeSpaceException != null}">
+	 <swim:Catch var="FreeSpaceException">
+	  <!-- LET ME GET THE FILE SYSTEM INFORMATION TO DETERMINE FREE SPACES -->
+      <glib:getCurrentFlash device="${device}" returnVar="currentFLASH" showFileSystemCmd="show file systems"/>
+	  <j:if test="${currentFLASH != null}">
+	   <j:setProperties object="${device}" currentFlash="${currentFLASH}"/>
+	  </j:if>
+     </swim:Catch>
+	</j:if>
+   </j:when>
+   </j:choose>
+   
+   <!--d:ExecuteShowCommand returnVar="result" command="show version" refreshTime="300000" ip="${device.ipAddress}"/-->
+   <glib:executeShowCommand returnVar="result" cmd="show version" deviceIpAddress="${device.ipAddress}"/>
+   <j:if test="${result != null &amp;&amp; result.getSuccessStatus() &amp;&amp; result.getOutput() != null}">
+    <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+    <j:if test="${error!=null}">
+	 <swim:JobLog ip="${Device.ipAddress}"
+            message="Failed to initialize device related information."/>
+     <swim:Throw message="${result.output}"/>
+    </j:if>
+    <j:set var="result" value="${result.getOutput()}"/>
+    <u:Split returnVar="lines" input="${result}"/>
+     <swim:For var="line" items="${lines}">
+	  <j:if test="${isVersionSet!=true &amp;&amp; versionRegex!= null}">
+		<u:Match input="${line}" regex="${versionRegex}" vars="version" trim="true"/>
+		<j:if test="${MATCHED}">
+	     <j:set var="isVersionSet" value="true"/>
+		 <j:setProperties object="${device}" oSVersion="${version}"/>
+		 <j:invoke on="${device}" method="setOSVersion">
+		  <j:arg type="java.lang.String" value="${version}" />
+		 </j:invoke>
+		</j:if>
+	  </j:if> 
+	  
+	  <j:if test="${isBuildPathSet!=true &amp;&amp; buildPathRegex != null}">
+		<u:Match input="${line}" regex="${buildPathRegex}" vars="buildPath" trim="true"/>
+		<j:if test="${MATCHED}">
+	     <j:set var="isBuildPathSet" value="true"/>
+		 <su:replaceAll returnVar="buildPath" on="${buildPath}" regex=":/" replacement="//"/>
+		 <su:replaceAll returnVar="buildPath" on="${buildPath}" regex=":" replacement="//"/>
+		 <su:replaceAll returnVar="buildPath" on="${buildPath}" regex="//" replacement=":/"/>
+		 <j:setProperties object="${device}" bootPath="${buildPath}"/>
+		</j:if>
+	  </j:if>
+	  
+	  <j:if test="${isCRAMSet!=true &amp;&amp; currentRAMRegex != null}">
+		<u:Match input="${line}"
+             regex="${currentRAMRegex}"
+             vars="currentRAM,usedR" trim="true"/>
+		<j:if test="${MATCHED}">
+	     <j:set var="isCRAMSet" value="true"/>
+		 <j:if test="${usedR != null}">
+		  <j:set var="currentRAM" value="${currentRAM+usedR}"/>
+		 </j:if>
+		 <swim:Catch var="NFException">
+		  <swim:Create type="LongNumber" returnVar="currentRAM" value="${currentRAM}"/>
+	      <swim:Create type="LongNumber" returnVar="mbVal" value="1024"/>
+		  <swim:Create type="Decimal" returnVar="dVal" value="${currentRAM/mbVal}"/>
+	      
+          <j:invokeStatic var="decValue" className="java.lang.Math" method="ceil">
+	       <j:arg type = "double" value="${dVal}" />
+	      </j:invokeStatic>
+	      <j:invokeStatic var="roundValue" className="java.lang.Math" method="round">
+	       <j:arg type = "double" value="${decValue}" />
+	      </j:invokeStatic>
+		  <j:set var="ramImMb" value="${roundValue}"/>
+		  <j:setProperties object="${device}" currentRAM="${ramImMb}"/>
+	     </swim:Catch>
+		</j:if>
+	   </j:if>
+	   
+	   <j:if test="${isCFLASHSet!=true &amp;&amp; currentFLASHRegex != null}">
+		<u:Match input="${line}"
+             regex="${currentFLASHRegex}"
+             vars="currentFLASH" trim="true"/>
+		<j:if test="${MATCHED}">
+	     <j:set var="isCFLASHSet" value="true"/>
+		 <swim:Catch var="NFException">
+		 <swim:Create type="LongNumber" returnVar="currentFLASH" value="${currentFLASH}"/>
+	      <swim:Create type="LongNumber" returnVar="mbVal" value="1024"/>
+		  <swim:Create type="Decimal" returnVar="dVal" value="${currentFLASH/mbVal}"/>
+	      
+          <j:invokeStatic var="decValue" className="java.lang.Math" method="ceil">
+	       <j:arg type = "double" value="${dVal}" />
+	      </j:invokeStatic>
+	      <j:invokeStatic var="roundValue" className="java.lang.Math" method="round">
+	       <j:arg type = "double" value="${decValue}" />
+	      </j:invokeStatic>
+		  <j:set var="flashInMb" value="${roundValue}"/>
+		  <j:setProperties object="${device}" currentFlash="${flashInMb}"/>
+	     </swim:Catch>
+		</j:if>
+	   </j:if>
+      </swim:For>
+	 </j:if>
+    </j:when>
+	<j:otherwise>
+	 <swim:JobLog ip="${Device.ipAddress}"
+            message="Failed to initialize device related information."/>
+     <swim:Throw message="device input is not valid"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+
+  <!-- 
+  Gets the  boot drive of active/standby processor.
+  Executes show redundancy command on the device to know boot drive for active/standby processor.
+
+  Inputs:
+  * ipAddress: the ipAddress of the device.
+  * forActive : boolean indicating active/standby
+  Outputs:
+      Returns a set with data as boot drive name.
+  Throws:
+      Exception if there is an error in the output of "show file system".
+  -->
+  
+  <swim:Function name="getRouteProcessorFileSystems">
+    
+	<swim:Catch var="getDrivesException">
+    <glib:getDrives returnVar="driveList" driveTypePattern="(disk)" showFileSystemCmd="show file systems"/>
+	<swim:Log type="LOGDEBUG" message="${Device.ipAddress} : got drive list as ${driveList}." />
+   </swim:Catch>
+  
+   <j:if test="${getDrivesException != null}">
+    <swim:Log type="LOGERROR" message="Exception while finding drives on device: ${Device.ipAddress} ${getDrivesException}." />
+    <swim:JobLog ip="${Device.ipAddress}" message="Exception while finding drives on device: ${getDrivesException.getReason()}." />
+   </j:if>
+   <swim:Create type="Set" returnVar="fs"/>
+    <j:set var="exclusionDrives" value="(?:(?:slave(.+)) | (?:dcf.*)| (?:bootdisk.*) | (?:bootflash.*))"/>
+   <j:choose>
+    <j:when test ="${driveList != null}">
+	 <functionCall:filterUnusableDrives driveList="${driveList}"/>
+	 <swim:For var="drive" items="${driveList}">
+	  <u:Add on="${fs}" param="${drive}"/>
+     </swim:For>
+	</j:when>
+	<j:otherwise>
+	 <!--d:ExecuteShowCommand returnVar="result" command="show redundancy" ip="${ipAddress}"/-->
+	 <glib:executeShowCommand returnVar="result" cmd="show redundancy" deviceIpAddress="${ipAddress}"/>
+     <functionCall:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+	 <j:choose>
+	  <j:when test="${error!=null}">
+	   <swim:Throw message="${result.getError()}"/>
+      </j:when>
+	  <j:otherwise>
+	   <functionCall:getBootDriveName output="${result.getOutput()}" forActive="${forActive}" returnVar="bootDrive"/>
+	   <j:if test="${bootDrive != null}">
+	    <u:Add on="${fs}" param="${bootDrive}:" />
+	    <swim:Return varName="${returnVar}" value="${fs}"/>	 
+	   </j:if>
+	   <swim:Return/>
+	  </j:otherwise>
+	 </j:choose>
+	</j:otherwise>
+   </j:choose>
+   <swim:Log type="LOGDEBUG" message="${Device.ipAddress} filetred drives  ${fs}" />
+   <swim:Return varName="${returnVar}" value="${fs}"/>	
+  </swim:Function>
+  
+  <!--
+  * driveList :
+  -->
+  <swim:Function name ="filterUnusableDrives">
+   <functionCall:getExclusionDrives returnVar="exclusionDrives" drives="${driveList}"/>
+  
+  <j:if test="${exclusionDrives != null &amp;&amp; driveList != null}">
+   <swim:For var="eDrive" items="${exclusionDrives}">
+    <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : Before deleting filtered drive ${eDrive} total list is:  ${driveList}." />
+	<u:Remove on="${driveList}" param="${eDrive}"/>
+	<swim:Log type="LOGDEBUG" message="${Device.ipAddress} : After deleting filtered drive ${eDrive} total list is:  ${driveList}." />
+   </swim:For>
+  </j:if>
+  </swim:Function>
+  <!--
+  -->
+  <swim:Function name ="getExclusionDrives">
+   <swim:Create returnVar="exclusionDriveSet" type="Set"/>
+   <j:set var="exclusionDrives" value="(?:slave(.+))|(?:dfc.*:\/?)|(?:dfc.*)|(?:bootdisk.*)|(?:bootflash.*)"/>
+   <j:if test="${drives != null}">
+    <swim:For var="drive" items="${drives}">
+     <u:Match input="${drive}" regex="${exclusionDrives}"/>
+	 <j:if test="${MATCHED}">
+	  <u:Add on="${exclusionDriveSet}" param="${drive}"/>
+	 </j:if>
+    </swim:For>
+   </j:if>
+   <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : Exclusion drives :  ${exclusionDriveSet}." />
+   <swim:Return varName="${returnVar}" value="${exclusionDriveSet}"/>
+  </swim:Function>
+  
+  <!-- 
+  Gets the fress spaces on boot drive of standby processor.
+  Executes show redundancy command on the device to know boot drive for standby processor.Then executes dir command to get free info.
+
+  Inputs: 
+   * ipAddress: the ipAddress of the device.
+  Outputs:
+      Returns a map where the key is the drive name and value is a long value with free space on the drive in bytes.
+  Throws:
+      Exception if there is an error in the output of "dir".
+  -->
+  <swim:Function name="getFreeSpacesStandby">
+    <!--d:ExecuteShowCommand returnVar="result" command="show redundancy" ip="${ipAddress}"/-->
+	<glib:executeShowCommand returnVar="result" cmd="show redundancy" deviceIpAddress="${ipAddress}"/>
+    <functionCall:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+	<j:choose>
+	 <j:when test="${error!=null}">
+	  <swim:Throw message="${result.getError()}"/>
+     </j:when>
+	 <j:otherwise>
+	  <functionCall:getBootDriveName output="${result.getOutput()}" forActive="false" returnVar="bootDrive"/>
+	  <j:if test="${bootDrive != null}">
+	   <!-- got the drive name now execute dir ${bootDrive}: command and parse the result to get free info-->
+	   <!--d:ExecuteCommand returnVar="dirResult" command="dir ${bootDrive}:"
+                         ip="${ipAddress}"/-->
+	   <glib:executeShowCommand returnVar="dirResult" cmd="dir ${bootDrive}:" deviceIpAddress="${ipAddress}"/>
+       <glib:parseErrorFromOutput returnVar="error" output="${dirResult.getOutput()}"/>
+	   <j:choose>
+	    <j:when test="${error!=null}">
+	     <swim:Throw message="${dirResult.getError()}"/>
+        </j:when>
+        <j:otherwise>
+		 <functionCall:parseFreeSpaceFromDirResult output="${dirResult.getOutput()}" returnVar="freeSpace"/>
+		 <swim:Create type="Map" returnVar="freeSpaces"/>
+		 <u:Add on="${freeSpaces}" param1="${bootDrive}:" param2="${freeSpace}"/>
+		 <swim:Return varName="${returnVar}" value="${freeSpaces}"/>
+        </j:otherwise>
+       </j:choose>	 
+	  </j:if>
+	  <swim:Return/>
+	 </j:otherwise>
+	</j:choose>
+  </swim:Function>
+
+  <!-- 
+  Processes the output string of show redundancy command and to know boot drive for active/standBy processor.
+  Inputs:
+   * output: output strig of show redundancy command.
+   * forActive : true if for active, fasle otherwise.
+  Outputs:
+      Returns boot drive Name for processor .
+  -->
+  <swim:Function name="getBootDriveName">
+   <j:choose>
+	<j:when test="${output!=null}">
+	 <j:choose>
+	  <j:when test="${forActive == true}">
+	   <j:set var="processorInfoStartRegex" value="^\s*[Cc]urrent\s+[Pp]rocessor\s+[Ii]nformation.*$"/>
+	  </j:when>
+	  <j:otherwise>
+	   <j:set var="processorInfoStartRegex" value="^\s*[Pp]eer\s+[Pp]rocessor\s+[Ii]nformation.*$"/>
+	  </j:otherwise>
+	 </j:choose>
+	 <!-- SPLIT THE Output TO GET THE BOOT PATHS -->
+	 <u:Split input="${output}" returnVar="lines"/>
+	 <j:set var="processorInfoStartRegexMatched" value="false"/>
+	 <swim:For var="line" items="${lines}">
+	  <j:choose>
+	   <j:when test="${processorInfoStartRegexMatched == true}">
+		<u:Match input="${line}" regex="^\s*[B|b][O|o]{2}[T|t]\s*=\s*([^:\/]+)[:\/].+$" vars="bootdir" trim="true"/>
+        <j:if test="${MATCHED==true}">
+		 <!--swim:Return varName="${returnVar}" value="${bootdir}"/-->
+		 <j:choose>
+		  <j:when test="${forActive != true}">
+		  <!-- Manipulate boot dir with slaves ?${bootdir} -->
+		  <swim:Return varName="${returnVar}" value="slave${bootdir}"/>
+	      </j:when>
+		  <j:otherwise>
+		   <swim:Return varName="${returnVar}" value="${bootdir}"/>
+		  </j:otherwise>
+		 </j:choose>
+	    </j:if>
+	   </j:when>
+	   <j:otherwise>
+	    <u:Match input="${line}" regex="${processorInfoStartRegex}"/>
+        <j:if test="${MATCHED==true}">
+	     <j:set var="processorInfoStartRegexMatched" value="true"/>
+	    </j:if>
+       </j:otherwise>
+	  </j:choose>
+     </swim:For>
+    </j:when>
+	<j:otherwise>
+	 <swim:Return varName="${returnVar}"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function> 
+  
+  <!-- 
+  Gets free space information from output string of dir 'drive:'.
+
+  Inputs:
+   * output: output string of dir 'drive:' command.
+  Outputs:
+      Returns free space.
+  -->
+  <swim:Function name="parseFreeSpaceFromDirResult">
+   <j:choose>
+	<j:when test="${output!=null}">
+	 <j:set var="freeSpaceRegex" value="^.*[^\d](\d+)\s+[Bb]ytes\s+[Ff]ree.*$"/>
+	 <!-- SPLIT THE Output TO GET free space -->
+	 <u:Split input="${output}" returnVar="lines"/>
+	 <swim:For var="line" items="${lines}">
+	  <u:Match input="${line}" regex="${freeSpaceRegex}" vars="freeSpace" trim="true"/>
+      <j:if test="${MATCHED==true}">
+	   <swim:Return varName="${returnVar}" value="${freeSpace}"/>
+	  </j:if>
+	 </swim:For>
+    </j:when>
+	<j:otherwise>
+	 <swim:Return varName="${returnVar}"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function> 
+ 
+  <!-- 
+  Gets the fress spaces on boot drive of active processor. 
+  Executes show redundancy command on the device to know boot drive for active processor.
+  Then executes dir command to get free info.
+
+  Inputs:
+   * ipAddress: the ipAddress of the device.
+  Outputs:
+      Returns a map where the key is the drive name and value is a long value with free space on the drive in bytes.
+  Throws:
+      Exception if there is an error in the output of "dir ".
+  -->
+  <swim:Function name="getFreeSpacesActive">
+     <swim:Catch var="freeException">
+      <glib:getFreeSpaces returnVar="freeSpaceMap" showFileSystemCmd="show file systems"/>
+     </swim:Catch>
+  
+    <j:if test="${freeException != null}">
+     <swim:Log type="LOGERROR" message="Exception while finding free spaces on device: ${Device.ipAddress} ${freeException}" />
+     <swim:JobLog ip="${Device.ipAddress}" message="Exception while finding free spaces on device: ${freeException.getReason()}" />
+    </j:if>	
+	<swim:Return varName="${returnVar}" value="${freeSpaceMap}"/>
+  </swim:Function>
+    
+  <!-- 
+  Executes show redundancy command and returns output string .
+  Input:
+   * Device : the device bean
+  Output: 
+   * the output string.
+  Throws :
+     if command has error or command output is null. 
+  -->
+  <swim:Function name ="executeShowRedudencyAndGetOutput">
+   <swim:JobLog ip="${Device.ipAddress}" message="Executing command : show redundancy"/>
+   <!--d:ExecuteShowCommand returnVar="result" command="show redundancy" refreshTime="120000" ip="${Device.ipAddress}"/-->
+   <j:choose>
+    <j:when test="${label != null}">
+     <glib:executeShowCommand returnVar="result" cmd="show redundancy" deviceIpAddress="${Device.ipAddress}" label="${label}show_redundancy"/>
+    </j:when>
+    <j:otherwise>
+     <glib:executeShowCommand returnVar="result" cmd="show redundancy" deviceIpAddress="${Device.ipAddress}"/>
+    </j:otherwise>
+   </j:choose>
+   <j:choose>
+    <j:when test="${result != null}">
+     <j:choose>
+      <j:when test="${result.getError() != null }">
+	   <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+       <swim:Throw message="${result.getError()}"/>
+      </j:when>
+	  <j:when test="${result.getOutput() != null}">
+	   <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+	   <functionCall:parseErrorFromOutput returnVar="error"
+                               output="${result.getOutput()}"/>
+        <j:if test="${error!=null}">
+         <swim:Throw message="'${command}' failed on device with error: ${result.getOutput()}"/>
+        </j:if>
+	   <swim:Return varName="${returnVar}" value="${result.getOutput()}"/>
+	  </j:when>
+     </j:choose>
+	 </j:when>
+	 <j:otherwise>
+	  <swim:Throw message="show redundancy command result is null."/>
+	 </j:otherwise>
+	</j:choose>
+  </swim:Function>
+    
+  <!--
+  Executes commands and stores output against given label.
+  Input:
+   * Device : the device bean
+   * isPre : boolean indicating if it is a pre command.
+  -->
+  <swim:Function name ="ShowCommandsChecklist">
+        <swim:Stage stage="STARTED" stageName="startingchecklist"
+                message="checklist started"/>
+  <j:set var="labelSuffix" value="_"/>
+  <j:choose>
+   <j:when test="${isPre == true}">
+    <j:set var="labelSuffix" value="Pre"/>
+   </j:when>
+   <j:otherwise>
+    <j:set var="labelSuffix" value="Post"/>
+   </j:otherwise>
+  </j:choose>
+   <swim:JobLog ip="${Device.ipAddress}" message="Starting to execute commands and storing results of show command checklist : ${labelSuffix}"/>
+    <swim:Stage stage="STARTED" stageName="phase1_checklist"
+                message="phase1_checklist"/>				 
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show running-config" label="show_running_config_${labelSuffix}"/>
+   </swim:Catch>  				 
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show module" label="show_module_${labelSuffix}"/>
+   </swim:Catch>
+   
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show redundancy" label="show_redundancy_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip int brief | in up" label="show_ip_int_brief_|_in_up_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip route summary" label="show_ip_route_summary_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Stage stage="STARTED" stageName="phase2_checklist"
+                message="phase2_checklist"/>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip ospf neighbor" label="show_ip_ospf_neighbor_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show isis neighbors" label="show_isis_neighbors_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show proc cpu history" label="show_proc_cpu_history_${labelSuffix}"/>
+   </swim:Catch>
+   
+   
+   <!--*********************************************************************************************************-->
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip ospf int brief" label="show_ip_ospf_int_brief_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show proc cpu sorted" label="show_proc_cpu_sorted_${labelSuffix}"/>
+   </swim:Catch>
+   
+     <swim:Stage stage="STARTED" stageName="phase3_checklist"
+                message="phase3_checklist"/>
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show version" label="show_version_${labelSuffix}"/>
+   </swim:Catch>
+   
+    <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show diagnostic status" label="show_diagnostic_status_${labelSuffix}"/>   
+   </swim:Catch>
+   
+   
+    <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show environment" label="show_environment_${labelSuffix}"/>   
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show memory" label="show_memory_${labelSuffix}"/>
+   </swim:Catch>
+   
+    <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip int brief" label="show_ip_int_brief_${labelSuffix}"/>
+   </swim:Catch>
+    
+      <swim:Stage stage="STARTED" stageName="phase4_checklist"
+                message="phase4_checklist"/>
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show cdp neighbors" label="show_cdp_neighbors_${labelSuffix}"/>
+   </swim:Catch>
+    
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show mpls ldp neighbor" label="show_mpls_ldp_neighbor_${labelSuffix}"/>
+   </swim:Catch>
+    
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show mpls interface" label="show_mpls_interface_${labelSuffix}"/>
+   </swim:Catch>
+    
+    <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show bfd neighbors" label="show_bfd_neighbors_${labelSuffix}"/>   
+   </swim:Catch>																			
+   
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip bgp summary" label="show_ip_bgp_summary_${labelSuffix}"/>
+   </swim:Catch>
+   
+     <swim:Stage stage="STARTED" stageName="phase5_checklist"
+                message="phase5_checklist"/>
+   
+   <swim:Catch var="sEx">																	
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip bgp vpnv4 all summary" label="show_ip_bgp_vpnv4_all_summary_${labelSuffix}"/>   
+   </swim:Catch>
+   
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show spanning-tree" label="show_spanning_tree_${labelSuffix}"/>   
+   </swim:Catch>
+   
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show vlan" label="show_vlan_${labelSuffix}"/>   
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show vtp status" label="show_vtp_status_${labelSuffix}"/>   
+   </swim:Catch>
+   
+   
+    <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show protocol" label="show_protocol_${labelSuffix}"/>   
+   </swim:Catch>
+   
+   
+    <swim:Stage stage="STARTED" stageName="phase6_checklist"
+                message="phase6_checklist"/> 
+   
+    <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show interface trunk" label="show_interface_trunk_${labelSuffix}"/>   
+   </swim:Catch>
+   
+    <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show vlan internal usage" label="show_vlan_internal_usage_${labelSuffix}"/>   
+   </swim:Catch>
+   
+    <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show xconnect all" label="show_xconnect_all_${labelSuffix}"/>   
+   </swim:Catch>
+   
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show inventory" label="show_inventory_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show power" label="show_power_${labelSuffix}"/>
+   </swim:Catch>
+   
+     <swim:Stage stage="STARTED" stageName="phase7_checklist"
+                message="phase7_checklist"/>
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show interface status" label="show_interface_status_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show interface description" label="show_interface_description_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show policy-map interface" label="show_policy-map_interface_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show etherchannel summary" label="show_etherchannel_summary_${labelSuffix}"/>
+   </swim:Catch>
+   
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show cdp neighbors detail" label="show_cdp_neighbors_detail_${labelSuffix}"/>
+   </swim:Catch>
+   
+   
+     <swim:Stage stage="STARTED" stageName="phase8_checklist"
+                message="phase8_checklist"/>
+   
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show clns interface" label="show_clns_interface_${labelSuffix}"/>
+   </swim:Catch>
+   
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show mpls forwarding-table" label="show_mpls_forwarding-table_${labelSuffix}"/>
+   </swim:Catch>
+   
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ipv4 unicast neighbors" label="show_ipv4_unicast_neighbors_${labelSuffix}"/>
+   </swim:Catch>
+   
+   
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show log" label="show_log_${labelSuffix}"/>
+   </swim:Catch>
+   
+   <swim:Catch var="sEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show platform hardware capacity cpu" label="show_platform_hardware_capacity_cpu_${labelSuffix}"/>   
+   </swim:Catch>
+   
+     <swim:Stage stage="STARTED" stageName="phase9_checklist"
+                message="phase9_checklist"/>
+   
+   <swim:Catch var="sEx">
+    <swim:JobLog ip="${Device.ipAddress}" message="Completed executing commands and storing results of show command checklist : ${labelSuffix}"/>
+   </swim:Catch>
+  </swim:Function>
+
+  <!--
+  Executes command and stores output against given label.
+  Input:
+   * Device : the device bean
+   * cmd : the command to execute
+   * label : the label to store output against
+  -->
+  <swim:Function name ="executeCommandAndStoreOutput">
+   <swim:JobLog ip="${Device.ipAddress}" message="Executing command : ${cmd}"/>
+   <!--d:ExecuteCommand returnVar="result"
+                      command="${cmd}&#10;&#10;&#10;" ip="${Device.ipAddress}" label="${label}" storeResult="true" refreshTime="0"/-->
+   <glib:executeShowCommand returnVar="result" cmd="${cmd}" deviceIpAddress="${Device.ipAddress}" label="${label}"/>
+   <j:choose>
+    <j:when test="${result != null}">
+     <j:choose>
+      <j:when test="${result.getError() != null }">
+	   <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+	   <swim:Throw message="Error while executing command ${cmd}, ${result.getError()}"/>
+       <swim:Return/>
+      </j:when>
+	  <j:when test="${result.getOutput() != null}">
+	   <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+	   <glib:parseErrorFromOutput returnVar="error"
+                               output="${result.getOutput()}"/>
+       <j:if test="${error!=null}">
+		<swim:Throw message="Error while executing command ${cmd}, ${error}"/>
+		<swim:Return/>
+       </j:if>
+	  </j:when>
+     </j:choose>
+	</j:when>
+	<j:otherwise>
+	 <swim:Throw message="${cmd} result is null."/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+  <!-- 
+  Collects core dump from rp.
+  Input:
+   * Device : the device bean
+   * ip : extrenal ftp ip address
+   * uName : external ftp userName 
+   * pass : external ftp password 
+  -->
+  <swim:Function name ="collectCoreDumpFromRP">
+   <swim:JobLog ip="${Device.ipAddress}" message="Starting to collect core dump from RP."/>
+   					
+   <swim:Catch var="pingEx">
+    <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="ping ${ip}" label="ping ${ip} during collect core dump from RP"/>
+   </swim:Catch>
+   
+   <j:choose>
+    <j:when test = "${pingEx != null}">
+	 <swim:JobLog ip="${Device.ipAddress}" message="Exception while ping ftp server during collect core dump from RP."/>
+	 <swim:JobStatus result="Fail" message="Error : ${pingEx.getReason()}."/>
+	 <swim:Return/>
+	</j:when>
+    <j:otherwise>
+	 <swim:JobLog ip="${Device.ipAddress}" message="Configuring ip ftp,exception protocol and exception dump."/>
+     <d:ExecuteConfigCommand returnVar="result" ip="${Device.ipAddress}"
+                            command="ip ftp username ${uName}&#10;ip ftp password ${pass}&#10;exception protocol ftp&#10;exception dump ${ip}&#10;"/>
+	</j:otherwise>
+	<j:choose>
+     <j:when test="${result != null}">
+      <j:choose>
+       <j:when test="${result.getError() != null }">
+	    <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+        <swim:JobStatus result="Fail" message="Error : ${result.getError()}."/>
+	    <swim:Return/>
+       </j:when>
+	   <j:when test="${result.getOutput() != null}">
+	    <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+	    <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+        <j:if test="${error!=null}">
+		 <swim:JobStatus result="Fail" message="Error : ${error}."/>
+	     <swim:Return/>
+        </j:if>
+	   </j:when>
+      </j:choose>
+	 </j:when>
+	 <j:otherwise>
+	  <swim:JobStatus result="Fail" message="command result is null."/>
+	  <swim:Return/>
+	 </j:otherwise>
+    </j:choose>
+   </j:choose>
+   
+   <swim:JobLog ip="${Device.ipAddress}" message="Executing command : write core"/>
+   <d:ExecuteCommand returnVar="result"
+                      command="write core&#10;&#10;&#10;"
+                      ip="${Device.ipAddress}" label="${label}" storeResult="true" refreshTime="10800000"/>
+   <j:choose>
+    <j:when test="${result != null}">
+     <j:choose>
+      <j:when test="${result.getError() != null }">
+	   <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+	   <swim:JobStatus result="Fail" message="write core command failed."/>
+       <swim:Return/>
+      </j:when>
+	  <j:when test="${result.getOutput() != null}">
+	   <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+	   <glib:parseErrorFromOutput returnVar="error"
+                               output="${result.getOutput()}"/>
+        <j:if test="${error!=null}">
+		 <swim:JobStatus result="Fail" message="Error while executing command write core, ${error}"/>
+		 <swim:Return/>
+        </j:if>
+	   </j:when>
+      </j:choose>
+	 </j:when>
+	 <j:otherwise>
+	  <swim:JobStatus result="Fail" message="Unable to validate output of command write core, output is null"/>
+	  <swim:Return/>
+	 </j:otherwise>
+	</j:choose>
+    
+	<!--
+	   Need to make sure if the command was complete ??
+	-->
+	<!--d:ExecuteShowCommand returnVar="result" command="show version" refreshTime="10800000" ip="${Device.ipAddress}"/-->
+	<glib:executeShowCommand returnVar="result" cmd="show version"  refTime="10800000" deviceIpAddress="${Device.ipAddress}"/>
+	<!--
+	-->  
+   <swim:JobLog ip="${Device.ipAddress}" message="Completed collecting core dump from RP."/>
+  </swim:Function>
+  
+  <!-- 
+  Prerequisites : Validate redudency setup and sets config-register .
+  Input:
+   * Device : the device bean
+  -->
+  <swim:Function name ="prerequisites">
+   <swim:JobLog ip="${Device.ipAddress}" message="Starting MOP suggested prerequisites"/>
+   
+   <swim:Catch var="shRedExc">
+	<functionCall:executeShowRedudencyAndGetOutput returnVar="shRedOutput" Device="${Device}"/>
+   </swim:Catch>
+   
+   <j:choose>
+	<j:when test="${shRedExc != null}">
+	 <swim:JobStatus result="Fail" message="prerequisites failed : error ${shRedExc.getReason()}"/>
+	 <swim:Return/>
+	</j:when>
+	<j:otherwise>
+	 <swim:Catch var="redudencyValidationException">
+	  <functionCall:validateRedudency returnVar="meg" Device="${Device}" output="${shRedOutput}"/>
+	 </swim:Catch>
+	 <j:choose>
+	  <j:when test="${redudencyValidationException != null}">
+	   <swim:JobStatus result="Fail" message="prerequisites failed : error ${redudencyValidationException.getReason()}"/>
+	   <swim:Return/>
+	  </j:when>
+	  <j:otherwise>
+	   <!--
+	   Set config register to 0x2102
+	   -->
+            <swim:JobLog ip="${Device.ipAddress}" message="enabling auto fpd upgrade on reload"/>
+	   <d:ExecuteConfigCommand returnVar="commandResult" ip="${Device.ipAddress}"
+                            command="upgrade fpd auto"/>
+	   <d:ExecuteConfigCommand returnVar="commandResult" ip="${Device.ipAddress}"
+                            command="config-register 0x2102"/>
+	   <!-- @TODO : ANAND Needs to put validation here -->
+	  </j:otherwise>
+	 </j:choose>
+	</j:otherwise>
+   </j:choose>
+    
+   <swim:JobLog ip="${Device.ipAddress}" message="Completed MOP suggested prerequisites"/>
+  </swim:Function>
+  
+  
+  <!--
+  Validates device's redundancy set up.
+  Input:
+   * Device : the device bean
+   * output : show redundancy command output string.
+  Output: 
+   * if redundancy setup is proper return related message.
+  Throws :
+     if redundancy setup is not proper throws exception with related message. 
+  -->
+  <swim:Function name ="validateRedudency">
+   <j:choose>
+	<j:when test="${output != null}">
+	 <j:set var="configuredRedundancyRegex" value=".*\s*[C|c]onfigured\s+[R|r]edundancy\s+[M|m]ode\s+.*(?:(?:[S|s][S|s][O|o])|(?:[R|r][P|p][R|r])).*"/>
+	 <j:set var="operatingRedundancyRegex" value=".*\s*[O|o]perating\s+[R|r]edundancy\s+[M|m]ode\s+.*(?:(?:[S|s][S|s][O|o])|(?:[R|r][P|p][R|r])).*"/>
+	 <j:set var="issuStateActiveRegex" value=".*\s*[C|c]urrent\s+[S|s]oftware\s+[S|s]tate\s+.*[A|a][C|c][T|t][I|i][V|v][E|e].*"/>
+	 <j:set var="issuStateStandbyRegex" value=".*\s*[C|c]urrent\s+[S|s]oftware\s+[S|s]tate\s+.*[S|s][T|t][A|a][N|n][D|d][B|b][Y|y]\s*[H|h][O|o][T|t].*"/>
+	   
+	 <j:set var="configuredRedundancyMatched" value="false"/>
+	 <j:set var="operatingRedundancyMatched" value="false"/>
+	 <j:set var="issuStateActiveReadyMatched" value="false"/>
+	 <j:set var="issuStateStandbyReadyMatched" value="false"/>
+	   
+	 <!--  For every line of output match current regex -->
+	 <u:Split returnVar="lines" input="${output}"/>		
+     <swim:For var="line" items="${lines}">
+	  <j:choose>
+	   <j:when test="${!configuredRedundancyMatched || !operatingRedundancyMatched || !issuStateActiveReadyMatched || !issuStateStandbyReadyMatched}">
+		<j:if test="${!configuredRedundancyMatched}">
+		 <u:Match input="${line}" regex="${configuredRedundancyRegex}"/>
+         <j:if test="${MATCHED}">
+		  <j:set var="configuredRedundancyMatched" value="true"/>
+		 </j:if>
+		</j:if>
+		
+		<j:if test="${operatingRedundancyMatched}">
+		 <j:if test="${!issuStateActiveReadyMatched}">
+		  <u:Match input="${line}" regex="${issuStateActiveRegex}"/>
+          <j:if test="${MATCHED}">
+		   <j:set var="issuStateActiveReadyMatched" value="true"/>
+		  </j:if>
+		 </j:if>
+		</j:if>
+		
+		<j:if test="${!operatingRedundancyMatched}">
+		 <u:Match input="${line}" regex="${operatingRedundancyRegex}"/>
+         <j:if test="${MATCHED}">
+	      <j:set var="operatingRedundancyMatched" value="true"/>
+		 </j:if>
+		</j:if>
+		
+		<j:if test="${!issuStateStandbyReadyMatched}">
+		 <u:Match input="${line}" regex="${issuStateStandbyRegex}"/>
+         <j:if test="${MATCHED}">
+		  <j:set var="issuStateStandbyReadyMatched" value="true"/>
+		 </j:if>
+		</j:if>
+		
+	   </j:when>
+	   <j:otherwise>
+		<swim:Break/>
+	   </j:otherwise>
+	  </j:choose>
+     </swim:For>
+	 
+	 <!-- check if all the regex are matched -->
+	 <j:choose>
+	  <j:when test="${!configuredRedundancyMatched}">
+	   <swim:Throw message="Device does not have valid configured redundancy."/>
+	  </j:when>
+	  <j:when test="${!operatingRedundancyMatched}">
+	   <swim:Throw message="Device does not have valid operating redundancy."/>
+	  </j:when>
+	  <j:when test="${!issuStateActiveReadyMatched}">
+	   <swim:Throw message="ISSU state of active RP is not valid."/>
+	  </j:when>
+	  <j:when test="${!issuStateStandbyReadyMatched == null}">
+	   <swim:Throw message="ISSU state of standby RP is not valid."/>
+	  </j:when>
+	 </j:choose>
+	 
+	 <!-- -->
+	 <swim:Return varName="${returnVar}" value="Device has proper redundancy setup."/>
+	</j:when>
+    <j:otherwise>
+     <swim:Throw message="show redundancy command output is null."/>
+    </j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+  <!-- 
+  This function checks if the current image running on the device is same/different as/from the one that is being installed.
+  This function does not return any value. But sets the job state as completed if the image being pushed is already installed on the device.
+  Global Variables:
+   * Device: the device bean
+   * Image: Image being installed.
+  Inputs:
+    None.
+  Outputs:
+		None.
+  -->
+  <swim:Function name="checkCurrentImage">
+   <swim:Stage stage="STARTED" stageName="checkCurrentImage"
+               message="check Current Image"/>
+   <swim:Log type="LOGDEBUG"
+             message="Checking current image for device: ${Device.ipAddress} "/>
+   <j:if test="${Device.oSVersion == null}">
+    <swim:Log type="LOGDEBUG"
+              message="No OS Version found in device: ${Device.ipAddress} "/>
+    <swim:JobLog ip="${Device.ipAddress}"
+              message="Unable to determine device OS Version. Continuing install anyway "/>
+    <swim:Return/>
+   </j:if>
+   <swim:Log type="LOGDEBUG"
+             message="OS Version on device: ${Device.ipAddress} is ${Device.oSVersion}. Version to be installed is ${Image.oSVersion}"/>
+   <swim:JobLog ip="${Device.ipAddress}"
+             message="OS Version on device is ${Device.oSVersion}. Version to be installed is ${Image.oSVersion}"/>
+   <j:if test="${Device.oSVersion == Image.oSVersion}">
+    <swim:Return/>
+   </j:if>
+   <glib:getFileNameFromPath returnVar="path" onPath="${Device.bootPath}"/>
+   <j:if test="${path== null}">
+    <swim:Log type="LOGDEBUG"
+              message="Unable to determine boot file on device: ${Device.ipAddress}."/>
+    <swim:JobLog ip="${Device.ipAddress}"
+              message="Unable to determine boot file on device. Continuing install anyway"/>
+    <swim:Return/>
+   </j:if>
+   <swim:Log type="LOGDEBUG"
+             message="boot file on device:  ${Device.ipAddress} is ${path}. File to be installed is ${Image.name}"/>
+   <swim:JobLog ip="${Device.ipAddress}"
+             message="boot file on device is: '${path}'. File to be installed is '${Image.name}'"/>
+   <j:if test="${path==Image.name}">
+    <swim:Log type="LOGDEBUG"
+              message="Image to be installed is already running on device:  ${Device.ipAddress} . File to be installed is ${Image.name}"/>
+    <swim:JobLog ip="${Device.ipAddress}"
+              message="Image to be installed is already running on device. File to be installed is ${Image.name}"/>
+    <swim:Stage stage="COMPLETE" stageName="checkCurrentImage"
+                message="Required image is already running. No install required"/>
+    <swim:JobStatus result="Success"
+                message="Required image is already running. No install required"/>
+    <swim:Return/>
+   </j:if>
+   <swim:Stage stage="COMPLETE" stageName="checkCurrentImage"
+               message="complete check image instance"/>
+  </swim:Function>
+  
+  <!--
+  Copy files from TFTP/FTP/SCP/SFTP server to the device. 
+  For a given set of files (image names), this function.
+  * Checks to see if they exist on the device.
+  * If they dont, it finds a drive with enough space to copy the files.
+  * If there is enough space, then it copies non-existent files from TFTP server.
+  * If there is not enough space, it deletes the files (optionally) to make space.
+  At the end, returns a map where the key is the name of the image and value is the path on the device (including drive name). 
+  Note: This function sets the job status as failed if it can not move forward.
+  Global Variables:
+   * FileSystems: List of file systems to try out on the device.
+   * Images: All the image files passed to the install job.
+   * Device : The device bean. 
+   * FREE_SPACE_NAME : map of drive and free spaces
+   * deleteSupported : param indicating to delete files in case no free space is available.     
+  Inputs:
+   None.
+  Outputs:
+   A map, where the key is the name of the image and value is the path on the device (including drive name). 
+  -->
+  <swim:Function name="copyFiles">
+      <swim:Stage stage="STARTED" stageName="copyFiles"
+               message="starting file copy"/>
+      <j:if test="${Images ==null || Images.size()==0}">
+          <swim:JobStatus result="Fail"
+                    message="Unable to find any selected image."/>
+          <swim:Return/>
+      </j:if>
+      <swim:Stage stage="EXECUTING" stageName="copyFiles"
+               message="Checking existing files"/>
+      <!-- Check to see if these images exist on the device already -->   
+      <swim:Create returnVar="filePaths" type="Map"/>
+      <!--<j:set var="p1" value="${freeDrive}/c7600-fpd-pkg.150-1.S6.pkg"/>
+    <u:Add on="${filePaths}" param1="c7600-fpd-pkg.150-1.S6.pkg" param2="${p1}"/>
+      -->
+   
+      <swim:For var="fs" items="${FileSystems}">
+          <functionCall:findExistingFiles drivePath="${fs}" />
+      </swim:For>
+      <j:set var="filePaths" value="${filePaths}" scope="parent"/>
+      <swim:Create returnVar="filesTobeCopied" type="Set"/>
+      <swim:Create returnVar="requiredSize" type="LongNumber" value="0"/>
+      <j:choose>
+          <j:when test="${filePaths!= null}">
+              <!-- For each image file to be copied -->
+              <swim:For var="img" items="${Images}">
+                  <u:ContainsKey returnVar="contains" on="${filePaths}"
+                     param="${img.name}"/>
+                  <!--
+                   if file is not present add it to filetobecopied and take the size as required sise+
+                  -->
+                  <j:if test="${contains!=true}">
+                      <!-- File does not exist. Add this to the "fileTobeCopied" list -->
+                      <u:Add on="${filesTobeCopied}" param="${img.name}"/>
+                      <j:if test="${img.fileSize>0}">
+                          <j:set var="requiredSize" value="${requiredSize+img.fileSize+50000000}"/>
+                      </j:if>
+                  </j:if>
+              </swim:For>
+          </j:when>
+          <j:otherwise>
+              <!-- Did not find any files on the device. Add all of them to "fileTobeCopied" list -->
+              <swim:For var="img" items="${Images}">
+                  <u:Add on="${filesTobeCopied}" param="${img.name}"/>
+                  <j:if test="${img.fileSize>0}">
+                      <j:set var="requiredSize" value="${requiredSize+img.fileSize+50000000}"/>
+                  </j:if>
+              </swim:For>
+          </j:otherwise>
+      </j:choose>
+      <u:IsEmpty returnVar="isEmpty" on="${filesTobeCopied}"/>
+      <j:if test="${isEmpty==true}">
+          <!--
+           NO NEED TO COPY ANY FILE ALL ALREADY EXIST ON DEVICE 
+          -->
+          <swim:JobLog ip="${Device.ipAddress}"
+                 message="All required files are already on the device. No need to copy any files"/>
+          <swim:Stage stage="COMPLETE" stageName="copy files"
+                message="All required files are already on the device. No need to copy any files"/>
+          <swim:Return/>
+      </j:if>
+      <!--
+           NEED TO COPY FILES 
+      -->
+      <swim:Stage stage="EXECUTING" stageName="copyFiles"
+               message="Copying ${filesTobeCopied.size()} files"/>
+      <swim:JobLog ip="${Device.ipAddress}"
+                message="Need to copy ${filesTobeCopied.size()} files. Need ${requiredSize} bytes free"/>
+      <j:if test="${FileSystems == null || FileSystems.size() == 0}">
+          <!--  
+          NO FILE SYSTEM INFORMATION CANN'T PROCEED WITH COPY
+          -->
+          <swim:JobLog ip="${Device.ipAddress}"
+                 message="Unable to find any disks on the device to copy files."/>
+          <swim:JobStatus result="Fail"
+                    message="Unable to find any disks on the device to copy files."/>
+          <swim:Return/>
+      </j:if>
+      <j:if test="${FREE_SPACE_NAME!= null &amp;&amp; FREE_SPACE_NAME.isEmpty()==true}">
+          <!-- 
+          NO FREE DRIVE TO COPY FILES.
+          -->
+          <swim:JobLog ip="${Device.ipAddress}"
+                 message="Unable to determine free space on any disks."/>
+          <swim:JobStatus result="Fail"
+                    message="Unable to determine free space on any disks."/>
+          <swim:Return/>
+      </j:if>
+      <swim:For var="drive" items="${FileSystems}">
+          <j:if test="${FREE_SPACE_NAME != null}">
+              <u:Get returnVar="sz" on="${FREE_SPACE_NAME}" param="${drive}"/>
+              <j:if test="${sz!=null &amp;&amp; sz>requiredSize}">
+                  <j:set var="freeDrive" value="${drive}"/>
+                  <swim:Break/>
+              </j:if>
+          </j:if>
+      </swim:For>
+      <j:if test="${freeDrive== null}">
+          <!--
+          NO FREE DRIVE TO COPY FILE CHECKING IF DELETE IS EXPECTED.
+          -->
+          <j:if test="${deleteSupported==true}">
+              <swim:JobLog ip="${Device.ipAddress}"
+                  message="Delete from disks is supported."/>
+              <swim:Log type="LOGDEBUG" message="Delete from disks is supported."/>
+              <deletelib:handleDelete requiredSize="${requiredSize}" returnVar="driveName"/>
+              <j:if test="${driveName==null}">
+                  <swim:JobLog ip="${Device.ipAddress}"
+                   message="Unable to determine free space on any disks."/>
+                  <swim:JobStatus result="Fail"
+                      message="Unable to determine free space on any disks."/>
+                  <swim:Return/>
+              </j:if>
+          </j:if>
+      </j:if>
+      <j:if test="${driveName!=null}">
+          <j:set var="freeDrive" value="${driveName}"/>
+      </j:if>
+      <j:if test="${freeDrive== null}">
+          <!--
+          NO FREE DRIVE 
+          -->
+          <swim:JobLog ip="${Device.ipAddress}"
+                 message="Unable to find any disks with enough free space to copy files."/>
+          <swim:JobStatus result="Fail"
+                    message="Unable to find any disks with enough free space to copy files"/>
+          <swim:Return/>
+      </j:if>
+      <!--
+      FOUND FREE DRIVE ACTUAL COPY STARTS HERE 
+      -->
+   
+      <swim:For var="img" items="${Images}">
+          <su:contains returnVar="toBeCopied" on="${filesTobeCopied}"
+                    token="${img.name}"/>
+          <j:if test="${toBeCopied==true}">
+              <swim:Stage stage="EXECUTING" stageName="copy files"
+                       message="Copying file ${img.name}"/>
+              <swim:Create returnVar="isABFlash" type="Boolean" value="false"/>
+              <su:isEqual returnVar="isIOS" lhs="IOS" rhs="${Device.oSName}"/>
+              <j:if test = "${isIOS==true}">
+                  <glib:getFlashType returnVar="fType" drive="${freeDrive}" device="${Device}"/>
+                  <su:isEqual returnVar="isABFlashType" lhs="AB" rhs="${fType}"/>
+                  <j:if test = "${isABFlashType==true}">
+                      <swim:Create returnVar="isABFlash" type="Boolean" value="true"/>
+                  </j:if>
+              </j:if>
+              <j:catch var="copyException">
+                  <d:CopyFileToDevice name="${img.name}" path="${freeDrive}/${img.name}"
+                                   size="${img.fileSize}" ip="${Device.ipAddress}" isEraseEnabled="${isABFlash}"/>
+                  <!-- new copy file to device -->
+                  <functionCall:checkFpdImage returnVar="boolFpdImage" freeDrive="${freeDrive}"/>
+                  <j:if test="${!boolFpdImage}">
+                      <!--<d:ExecuteCommand returnVar="result" command="copy ${ftpPath} ${freeDrive}&#10;&#10;&#10;&#10;" ip="${Device.ipAddress}"/>
+                      <swim:JobLog ip="${Device.ipAddress}" message="Image copy from ftp completed"/>-->
+             
+                      <!--<functionCall:windstreamMap returnVar="ftpPath" imageName="c7600-fpd-pkg.150-1.S6.pkg"/>-->
+                      <u:Get returnVar="fpdImageName" on="${fpdMap}" param="${imageName}"/>
+                      <functionCall:getFpdImagePath returnVar="fpdImagePath"/>
+                      <d:ExecuteCommand returnVar="result" command="copy ${fpdImagePath} ${freeDrive}&#10;&#10;&#10;&#10;" ip="${Device.ipAddress}"/>
+                      <swim:JobLog ip="${Device.ipAddress}" message=" FPD Image copy from ftp completed"/>
+                      <j:set var="p1" value="${freeDrive}/fpdImageName"/>
+                      <u:Add on="${filePaths}" param1="fpdImageName" param2="${p1}"/>
+                  </j:if>
+              </j:catch>
+              <j:set var="p" value="${freeDrive}/${img.name}"/>
+              <u:Add on="${filePaths}" param1="${img.name}" param2="${p}"/>
+              <j:if test="${engine_Local_Stage.complete==true}">
+                  <swim:Return/>
+              </j:if>
+          </j:if>
+      </swim:For>
+      <j:if test="${copyException!=null}">
+          <!--
+          CHECKING IF THERE WAS ANY EXCEPTION WHILE COPYING FILES TO THE DEVICE. 
+          -->
+          <swim:Log type="LOGERROR"
+              message="Exception while copying files on device: ${Device.ipAddress} ${copyException}"/>
+          <su:indexOf returnVar="eIndex" on=" ${copyException}" token="cause ,"/>	
+          <j:if test="${eIndex>0}">
+              <su:substring returnVar="errorStr" on="${copyException}" from="${eIndex+7}"/>  
+              <swim:JobLog ip="${Device.ipAddress}" message="${errorStr}"/>
+          </j:if>
+          <swim:JobStatus result="Fail"
+                    message="Exception while copying files on device: ${Device.ipAddress} ${errorStr}"/>
+      </j:if>
+  </swim:Function>
+  
+  <!--
+  Given a set of file names, checks to see if these files exist on the device. If they do, return the paths to these images.
+  This function loops through all the given drives on the device and tries to find the file on any of them.
+  Please note that this checks only the root directories and does not traverse the sub directories.
+  Global Variables:
+   * drivePath: List of file systems to try out on the device.
+   * Images: All the image files passed to the install job.
+  Inputs:
+   None.
+  Outputs:
+   A map, where the key is the name of the image and value is the path on the device (including drive name). 
+   If a given image is not present in the map, that means the image is not found on the device.
+		
+  -->
+  <swim:Function name="findExistingFiles">	
+   <j:if test="${Images!=null &amp;&amp; Images.size()!=0}">
+    <!-- For each image name passed -->
+    <swim:For var="img" items="${Images}">
+     <!-- Add ":" to the end of the drive name if not present already. -->	  
+     <swim:Log type="LOGDEBUG" message="Drive under consideration is ${drivePath}"/>
+     <su:contains returnVar="contains" on="${drivePath}" token=":"/>
+     <j:if test="!${contains}">
+      <j:set var="drivePath" value="${drivePath}:"/>
+     </j:if>
+     <j:set var="cmd" value="dir ${drivePath}/${img.name}"/>
+     <!--d:ExecuteShowCommand returnVar="result" ip="{Device.ipAddress}" command="${cmd}"/-->
+     <glib:executeShowCommand returnVar="result" cmd="${cmd}" deviceIpAddress="${Device.ipAddress}"/>
+	 <j:if test="${result.getSuccessStatus()==true &amp;&amp; result.getOutput() != null}">
+      <glib:parseDirPath returnVar="dirPath" drive="${drivePath}"
+                          name="${img.name}" output="${result.getOutput()}"/>
+	  <j:choose>
+       <j:when test="${dirPath != null}">
+        <swim:Log type="LOGDEBUG"
+                  message="File ${img.name} found on path: ${dirPath}"/>
+        <u:Add on="${filePaths}" param1="${img.name}" param2="${dirPath}"/>	
+        <swim:Log type="LOGDEBUG"
+                  message="After adding ${img.name} Map is: ${filePaths}"/>
+       </j:when>
+	   <j:otherwise>
+	    <!-- check for subdirectories -->	 
+	    <swim:Log type="LOGDEBUG"
+                  message="Getting sub dirs for drive ${drivePath}"/>
+		<glib:getSubDirs returnVar="subDirs" dirName="${drivePath}"/>
+		<j:if test="${subDirs != null &amp;&amp; subDirs.size()>0}"> 
+		 <swim:Log type="LOGDEBUG"
+                   message="Recursive call for sub dirs ${subDirs} Map is: ${filePaths}"/>
+		 <swim:For var="fs" items="${subDirs}">
+          <functionCall:findExistingFiles drivePath="${fs}"/>
+         </swim:For>
+        </j:if>
+	   </j:otherwise>
+	  </j:choose>
+     </j:if>
+    </swim:For> 
+   </j:if>	   
+  </swim:Function>
+
+
+
+
+  
+  <!-- *****************************************************************************************************
+  Extracts RP slot no of active/standby rp.
+  Input:
+   * forActive : boolean true if for active otherwise false
+   * output : show redundancy command output string.
+  Output: 
+   * the desired slot no if found otherwise -1. 
+  **********************************************************************************************************-->
+  <swim:Function name ="extractRPSlot">
+   <j:choose>
+    <j:when test="${output != null}">
+	 <j:set var="SlotRegex" value=".*\s*[S|s][L|l][O|o][T|t].*(\d+).*"/>
+	 <j:set var="typeRegex" value=".*\s*[R|r][P|p]\s+[S|s][T|t].*[S|s][T|t][A|a][N|n][D|d][B|b][Y|y].*"/>
+	 <j:if test="${forActive}">
+	  <j:set var="typeRegex" value=".*\s*[R|r][P|p]\s+[S|s][T|t].*[A|a][C|c][T|t][I|i][V|v][E|e].*"/>
+	 </j:if>
+	 
+	 <j:set var="typeMatched" value="false"/>
+	 <j:set var="slot" value="-1"/>
+	   
+	 <!--  For every line of output match current regex -->
+	 <u:Split returnVar="lines" input="${output}"/>		
+     <swim:For var="line" items="${lines}">
+	  <j:if test="${!typeMatched}">
+	   <u:Match input="${line}" regex="${SlotRegex}" vars="slot"/>
+       <j:if test="${MATCHED}">
+		<swim:Continue/>
+	   </j:if>
+	  </j:if>
+	  <j:if test="${!typeMatched}">
+	   <u:Match input="${line}" regex="${typeRegex}" />
+       <j:if test="${MATCHED}">
+	    <j:set var="typeMatched" value="true"/>
+	    <swim:Break/>
+	   </j:if>
+	  </j:if>
+     </swim:For>
+	</j:when>
+   </j:choose>
+   <swim:Return varName="${returnVar}" value="${slot}"/>
+  </swim:Function>
+  
+  
+  <!-- *****************************************************************************************************
+  Executes  given command and returns output string .
+  Input:
+   * Device : the device bean
+   * commandString : the command string.
+  Output: 
+   * the output string.
+  Throws :
+     if command has error or command output is null. 
+  **********************************************************************************************************-->
+  <swim:Function name ="executeCommandOutput">
+   <!--d:ExecuteShowCommand returnVar="result" command="${commandString}" refreshTime="1200000" ip="${Device.ipAddress}"/-->
+   <glib:executeShowCommand returnVar="result" cmd="${commandString}"  deviceIpAddress="${Device.ipAddress}"/>
+   <j:choose>
+    <j:when test="${result != null}">
+     <j:choose>
+      <j:when test="${result.getError() != null }">
+       <swim:Throw message="${result.getError()}"/>
+      </j:when>
+	  <j:when test="${result.getOutput() != null}">
+	   <glib:parseErrorFromOutput returnVar="commandError" output="${result.getOutput()}"/>
+	    <j:if test="${commandError!=null}">
+	     <swim:Throw message="${commandError}"/>
+        </j:if>
+	   <swim:Return varName="${returnVar}" value="${result.getOutput()}"/>
+	  </j:when>
+     </j:choose>
+	 </j:when>
+	 <j:otherwise>
+	  <swim:Throw message="${commandString} command result is null."/>
+	 </j:otherwise>
+	</j:choose>
+  </swim:Function>
+
+  <!--
+  Verifies image at given path	
+  Inputs:
+   * fileAtPath: complete image name along with path.
+  Outputs:
+   NONE
+ -->
+  <swim:Function name="verifyImageAt">
+   <swim:JobLog ip="${Device.ipAddress}" message="Starting imgae verification for ${fileAtPath}."/>
+   <swim:Catch var="verifyEx">
+    <d:ExecuteCommand returnVar="outputString" command="verify ${fileAtPath}" ip="${Device.ipAddress}" refreshTime="0"/>
+   </swim:Catch>
+   <j:choose>
+    <j:when test="${verifyEx != null}">
+	 
+	 <swim:JobStatus result="Fail"
+                          message="Image verification failed."/>
+	  
+	 <swim:Return/>
+	</j:when>
+	<j:otherwise>
+	 <swim:JobLog ip="${Device.ipAddress}" message="Completed image verification for ${fileAtPath}."/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+    
+  <!--
+  fromPath : 
+  toPath :
+  Image :
+  deleteSupported : boolean
+  -->
+  <swim:Function name="makeRoomAndCopyFileInternal">
+      <swim:Stage stage="STARTED" stageName="copyFileInternal"
+                  message="starting file copy to internal"/>
+   
+      <j:if test="${Image == null}">
+          <swim:JobStatus result="Fail"
+                          message="Unable to copy file to ${toPath}."/>
+          <swim:Return/>
+      </j:if>
+      <!-- Check to see if these images exist on the device already -->   
+      <swim:Create returnVar="filePaths" type="Map"/>
+   
+      <functionCall:findExistingFiles drivePath="${toPath}" />
+      <j:set var="filePaths" value="${filePaths}" scope="parent"/>
+      <swim:Create returnVar="filesTobeCopied" type="Set"/>
+      <swim:Create returnVar="requiredSize" type="LongNumber" value="0"/>
+      <j:choose>
+          <j:when test="${filePaths!= null}">
+              <u:ContainsKey returnVar="contains" on="${filePaths}"
+                             param="${Image.name}"/>
+              <!--
+               if file is not present add it to filetobecopied and take the size as required sise+
+              -->
+              <j:if test="${contains!=true}">
+                  <!-- File does not exist. Add this to the "fileTobeCopied" list -->
+                  <u:Add on="${filesTobeCopied}" param="${Image.name}"/>
+                  <j:if test="${Image.fileSize>0}">
+                      <j:set var="requiredSize" value="${requiredSize+Image.fileSize+50000000}"/>
+                  </j:if>
+              </j:if>
+          </j:when>
+          <j:otherwise>
+              <!-- Did not find file on the drive. Add it to "fileTobeCopied" list -->
+              <u:Add on="${filesTobeCopied}" param="${Image.name}"/>
+              <j:if test="${Image.fileSize>0}">
+                  <j:set var="requiredSize" value="${requiredSize+Image.fileSize+50000000}"/>
+              </j:if>
+          </j:otherwise>
+      </j:choose>
+      <u:IsEmpty returnVar="isEmpty" on="${filesTobeCopied}"/>
+      <j:if test="${isEmpty==true}">
+          <!--
+               NO NEED TO COPY FILE AS FILE ALREADY EXIST ON DEVICE 
+          -->
+          <swim:JobLog ip="${Device.ipAddress}"
+                       message="File already present in drive ${toPath}. No need to copy file."/>
+          <swim:Stage stage="COMPLETE" stageName="copy files internal"
+                      message="File already present in drive ${toPath}. No need to copy file."/>
+          <swim:Return/>
+      </j:if>
+      <!--
+       NEED TO COPY FILES 
+      -->
+      <swim:Stage stage="EXECUTING" stageName="copyFiles internal"
+                  message="Copying file ${filesTobeCopied.size()} files"/>
+      <swim:JobLog ip="${Device.ipAddress}"
+                   message="Need to copy ${filesTobeCopied.size()} files. Need ${requiredSize} bytes free"/>
+      <j:if test="${fileSystemsStandby == null || fileSystemsStandby.size() == 0}">
+          <!--  
+          NO FILE SYSTEM INFORMATION CANN'T PROCEED WITH COPY
+          -->
+          <swim:JobLog ip="${Device.ipAddress}"
+                       message="Unable to find any disks on the device to copy files."/>
+          <swim:JobStatus result="Fail"
+                          message="Unable to find any disks on the device to copy files."/>
+          <swim:Return/>
+      </j:if>
+      <j:if test="${freeSpace_Standby!= null &amp;&amp; freeSpace_Standby.isEmpty()==true}">
+          <!-- 
+          ************ NO FREE DRIVE TO COPY FILES. **********************************
+          -->
+          <swim:JobLog ip="${Device.ipAddress}"
+                       message="Unable to determine free space on standby file system ${fileSystemsStandby}."/>
+          <swim:JobStatus result="Fail"
+                          message="Unable to determine free space on standby file system ${fileSystemsStandby}."/>
+          <swim:Return/>
+      </j:if>
+      <swim:For var="drive" items="${fileSystemsStandby}">
+          <j:if test="${freeSpace_Standby != null}">
+              <u:Get returnVar="sz" on="${freeSpace_Standby}" param="${drive}"/>
+              <j:if test="${sz!=null &amp;&amp; sz>requiredSize}">
+                  <j:set var="freeDrive" value="${drive}"/>
+                  <swim:Break/>
+              </j:if>
+          </j:if>
+      </swim:For>
+      <j:if test="${freeDrive== null}">
+          <!--
+                   NO FREE DRIVE TO COPY FILE CHECKING IF DELETE IS EXPECTED.
+          -->
+          <j:if test="${deleteSupported==true}">
+              <swim:JobLog ip="${Device.ipAddress}"
+                           message="Delete from disks is supported."/>
+              <swim:Log type="LOGDEBUG" message="Delete from disks is supported."/>
+              <j:set var="activeImageWithPath" value="${Device.bootPath}"/>
+              <deletelib:handleDelete FileSystems="${fileSystemsStandby}" activeImageWithPath="slave${activeImageWithPath}" requiredSize="${requiredSize}" returnVar="driveName"/>
+              <j:if test="${driveName==null}">
+                  <swim:JobLog ip="${Device.ipAddress}"
+                               message="Unable to determine free space on any disks."/>
+                  <swim:JobStatus result="Fail"
+                                  message="Unable to determine free space on any disks"/>
+                  <swim:Return/>
+              </j:if>
+          </j:if>
+      </j:if>
+      <j:if test="${driveName!=null}">
+          <j:set var="freeDrive" value="${driveName}"/>
+      </j:if>
+      <j:if test="${freeDrive== null}">
+          <!--
+                  NO FREE DRIVE 
+          -->
+          <swim:JobLog ip="${Device.ipAddress}"
+                       message="Unable to find any disks with enough free space to copy files."/>
+          <swim:JobStatus result="Fail"
+                          message="Unable to find any disks with enough free space to copy files"/>
+          <swim:Return/>
+      </j:if>
+      <!--
+   FOUND FREE DRIVE ACTUAL COPY STARTS HERE 
+      -->
+      <swim:JobLog ip="${Device.ipAddress}"
+                   message="Found ${freeDrive} to have enough space ${requiredSize} to copy files"/>
+      <swim:For var="img" items="${Images}">
+          <su:contains returnVar="toBeCopied" on="${filesTobeCopied}"
+                       token="${img.name}"/>
+          <j:if test="${toBeCopied==true}">
+              <swim:Stage stage="EXECUTING" stageName="copy files"
+                          message="Copying file ${img.name}"/>
+              <j:catch var="copyException">
+      					  				  
+                  <!--<d:CopyFileToDevice name="${img.name}" path="${freeDrive}/${img.name}" size="${img.fileSize}" ip="${Device.ipAddress}" isEraseEnabled="${isABFlash}"/>-->
+		
+                  <!-- 
+                  ANAND : internal copy is taking too much time so doing external copy as above.
+                  For internal copy below code can be uncommented (tested code)
+                  -->
+		
+               
+                  <d:ExecuteCommand returnVar="copyInternalResult" command="copy ${fromPath}/${img.name} ${freeDrive}&#10;&#10;&#10;&#10;"
+                                    ip="${Device.ipAddress}" refreshTime="18000000"/>	
+                  <glib:parseErrorFromOutput returnVar="error" output="${copyInternalResult.getOutput()}"/>
+                  <j:choose>
+                      <j:when test="${error!=null}">
+                          <swim:Throw message="${copyInternalResult.getError()}"/>
+                      </j:when>
+                      <j:otherwise>
+                          <swim:JobLog ip="${Device.ipAddress}"
+                                       message="${copyInternalResult.getOutput()}"/>
+                      </j:otherwise>
+                  </j:choose>
+                  <swim:JobLog ip="${Device.ipAddress}" message=" Internal Image copy from ftp completed"/>
+                  <functionCall:checkFpdImage returnVar="boolFpdImage" freeDrive="${freeDrive}"/>
+                  <j:if test="${!boolFpdImage}">
+                      <u:Get returnVar="fpdImageName" on="${fpdMap}" param="${imageName}"/>
+                      <swim:JobLog ip="${Device.ipAddress}" message="Internal FPD Image copy from ftp STArted"/>        
+                      <d:ExecuteCommand returnVar="copyInternalResult" command="copy ${fromPath}/fpdImageName ${freeDrive}&#10;&#10;&#10;&#10;" ip="${Device.ipAddress}"/>
+                      <glib:parseErrorFromOutput returnVar="error" output="${copyInternalResult.getOutput()}"/>
+                      <j:choose>
+                          <j:when test="${error!=null}">
+                              <swim:Throw message="${copyInternalResult.getError()}"/>
+                          </j:when>
+                          <j:otherwise>
+                              <swim:JobLog ip="${Device.ipAddress}"
+                                       message="${copyInternalResult.getOutput()}"/>
+                          </j:otherwise>
+                      </j:choose>
+                      <swim:JobLog ip="${Device.ipAddress}" message=" Internal FPD Image copy completed"/>
+                      <j:set var="p" value="${freeDrive}/${fpdImageName}"/>
+                      <u:Add on="${filePaths}" param1="${fpdImageName}" param2="${p}"/>
+                  </j:if>
+              </j:catch>
+              <j:set var="p" value="${freeDrive}/${img.name}"/>
+              <u:Add on="${filePaths}" param1="${img.name}" param2="${p}"/>
+              <j:if test="${engine_Local_Stage.complete==true}">
+                  <swim:Return/>
+              </j:if>
+          </j:if>
+      </swim:For>
+      <j:if test="${copyException!=null}">
+          <!--
+  CHECKING IF THERE WAS ANY EXCEPTION WHILE COPYING FILES TO THE DEVICE. 
+          -->
+          <swim:Log type="LOGERROR"
+                    message="Exception while copying files on device: ${Device.ipAddress} ${copyException}"/>
+          <su:indexOf returnVar="eIndex" on=" ${copyException}" token="cause ,"/>	
+          <j:if test="${eIndex>0}">
+              <su:substring returnVar="errorStr" on="${copyException}" from="${eIndex+7}"/>  
+              <swim:JobLog ip="${Device.ipAddress}" message="${errorStr}"/>
+          </j:if>
+          <swim:JobStatus result="Fail"
+                          message="Exception while copying files on device: ${Device.ipAddress} ${errorStr}"/>
+      </j:if>
+  </swim:Function>
+  	
+	   
+	   
+  <!--
+  Given a set of file names, checks to see if these files exist on the device. If they do, return the paths to these images.
+  This function loops through all the given drives on the device and tries to find the file on any of them.
+  Please note that this checks only the root directories and does not traverse the sub directories.
+  Global Variables:
+   * drivePath: List of file systems to try out on the device.
+   * Images: All the image files passed to the install job.
+  Inputs:
+   None.
+  Outputs:
+   A map, where the key is the name of the image and value is the path on the device (including drive name). 
+   If a given image is not present in the map, that means the image is not found on the device.
+		
+  -->
+  <swim:Function name="findExistingFiles">	
+      <j:if test="${Images!=null &amp;&amp; Images.size()!=0}">
+          <!-- For each image name passed -->
+          <swim:For var="img" items="${Images}">
+              <!-- Add ":" to the end of the drive name if not present already. -->	  
+              <swim:Log type="LOGDEBUG"
+                        message="Drive under consideration is ${drivePath}"/>
+              <su:contains returnVar="contains" on="${drivePath}" token=":"/>
+              <j:if test="!${contains}">
+                  <j:set var="drivePath" value="${drivePath}:"/>
+              </j:if>
+              <j:set var="cmd" value="dir ${drivePath}/${img.name}"/>
+              <!--d:ExecuteShowCommand returnVar="result" ip="{Device.ipAddress}"
+              command="${cmd}"/-->
+              <glib:executeShowCommand returnVar="result" cmd="${cmd}"  deviceIpAddress="${Device.ipAddress}"/>
+              <j:if test="${result.getSuccessStatus()==true &amp;&amp; result.getOutput() != null}">
+                  <glib:parseDirPath returnVar="dirPath" drive="${drivePath}"
+                                     name="${img.name}" output="${result.getOutput()}"/>
+                  <j:choose>
+                      <j:when test="${dirPath != null}">
+                          <swim:Log type="LOGDEBUG"
+                                    message="File ${img.name} found on path: ${dirPath}"/>
+                          <u:Add on="${filePaths}" param1="${img.name}" param2="${dirPath}"/>	
+                          <swim:Log type="LOGDEBUG"
+                                    message="After adding ${img.name} Map is: ${filePaths}"/>
+                      </j:when>
+                      <j:otherwise>
+                          <!-- check for subdirectories -->	 
+                          <swim:Log type="LOGDEBUG"
+                                    message="Getting sub dirs for drive ${drivePath}"/>
+                          <glib:getSubDirs returnVar="subDirs" dirName="${drivePath}"/>
+                          <j:if test="${subDirs != null &amp;&amp; subDirs.size()>0}"> 
+                              <swim:Log type="LOGDEBUG"
+                                        message="Recursive call for sub dirs ${subDirs} Map is: ${filePaths}"/>
+                              <swim:For var="fs" items="${subDirs}">
+                                  <functionCall:findExistingFiles drivePath="${fs}"/>
+                              </swim:For>
+                          </j:if>
+                      </j:otherwise>
+                  </j:choose>
+              </j:if>
+          </swim:For>   
+      </j:if>	   
+  </swim:Function>
+
+  <!--
+  Upgrade procedure: point 6: configure boot system
+  Input :
+   * imageFullNameWithPath
+  -->
+  <swim:Function name="configureBootSystem">
+      <j:choose>
+          <j:when test="${NEED_RELOAD==true}">
+              <swim:Stage stage="STARTED" stageName="Configure boot system"
+                          message="Starting required changes to boot system configuration."/>
+          </j:when>
+          <j:otherwise>
+              <swim:Stage stage="STARTED" stageName="Capture configuration changes needed with respect to boot system configuration changes"
+                          message="Capturing configuration changes to in boot system."/>
+          </j:otherwise>
+      </j:choose>
+      <j:choose>
+          <j:when test="${imageFullNameWithPath != null}">
+     
+              <swim:Catch var="bootSystemException">
+                  <functionCall:setBootSystem imageFullNameWithPath="${imageFullNameWithPath}" />
+              </swim:Catch>
+              <j:if test="${engine_Local_Stage.complete}">
+                  <swim:Return/>
+              </j:if>
+          </j:when>
+          <j:otherwise>
+              <swim:JobLog ip="${Device.ipAddress}"
+                  message="Boot system can not be set as input is null"/>
+              <swim:JobStatus result="Fail"
+                         message="Exception while changing/ identifying needed boot system changes."/>
+              <swim:Return/>
+          </j:otherwise>
+      </j:choose>
+      <j:choose>
+          <j:when test="${Exception!=null}">
+              <j:choose>
+                  <j:when test="${NEED_RELOAD==true}">
+                      <swim:Log type="LOGERROR"
+                 message="Exception while changing configuration with respect to boot system on device: ${Device.ipAddress} ${Exception}"/>
+                      <swim:JobLog ip="${Device.ipAddress}"
+                        message="Exception while changing configuration with respect to boot system on device: ${Device.ipAddress} ${Exception.getReason()}"/>
+                      <swim:JobStatus result="Fail"
+                       message="Exception while changing configuration with respect to boot system on device"/>
+                  </j:when>
+                  <j:otherwise>
+                      <swim:Stage stageName="capture needed configuration changes" stage="ERROR"
+                       message="comleted with error"/>
+                      <swim:Log type="LOGERROR"
+                 message="Exception while capturing needed configuration changes on device: ${Device.ipAddress} ${Exception.getReason()}"/>
+                      <swim:JobLog ip="${Device.ipAddress}"
+                        message="Exception while capturing needed configuration changes on device: ${Device.ipAddress} ${Exception.getReason()}"/>
+                      <swim:JobStatus result="Fail"
+                       message="Exception while capturing needed configuration changes just before reload"/>
+                  </j:otherwise>
+              </j:choose>
+          </j:when>
+          <j:when test="${bootSystemException != null}">
+              <j:choose>
+                  <j:when test="${NEED_RELOAD==true}">
+                      <swim:Stage stageName="pre install config" stage="ERROR"
+                       message="comleted with error"/>
+                      <swim:Log type="LOGERROR"
+                 message="Exception while changing the configuration with respect to boot system on device: ${Device.ipAddress} ${bootSystemException.getReason()}"/>
+                      <swim:JobLog ip="${Device.ipAddress}"
+                        message="Exception while changing the configuration with respect to boot system on device: ${Device.ipAddress} ${bootSystemException.getReason()}"/>
+                      <swim:JobStatus result="Fail"
+                       message="Exception while changing the configuration with respect to boot system."/>
+                  </j:when>
+                  <j:otherwise>
+                      <swim:Stage stageName="capture needed configuration changes" stage="ERROR"
+                       message="comleted with error"/>
+                      <swim:Log type="LOGERROR"
+                 message="Exception while capturing needed configuration changes with respect to boot system on device: ${Device.ipAddress} ${bootSystemException.getReason()}"/>
+                      <swim:JobLog ip="${Device.ipAddress}"
+                        message="Exception while capturing needed configuration changes with respect to boot system on device: ${Device.ipAddress} ${bootSystemException.getReason()}"/>
+                      <swim:JobStatus result="Fail"
+                       message="Exception while capturing needed configuration changes with respect to boot system."/>
+                  </j:otherwise>
+              </j:choose>
+          </j:when>
+          <j:otherwise>
+              <j:choose>
+                  <j:when test="${NEED_RELOAD==true}">
+                      <swim:Stage stageName="Configure boot system" stage="COMPLETE"
+                       message="Completed required changes to boot system configuration.."/>
+                  </j:when>
+                  <j:otherwise>
+                      <swim:Stage stageName="Capture configuration changes needed with respect to boot system configuration changes" stage="COMPLETE"
+                       message="Completed capturing needed configuration changes with respect to boot system."/>
+                  </j:otherwise>
+              </j:choose>
+          </j:otherwise>
+      </j:choose>
+  </swim:Function>
+  
+  <!--
+  Configure device to boot from the new desired image. This involves changing the configuration on the device to add boot path.
+  It makes sure the required boot command is the first command in the list of boot system commands in the configuration.
+  Global Variables:
+   * imageFullNameWithPath : name of the image file.
+   * Device : The device bean. 
+  Inputs:
+   None.
+  Outputs:
+   None.
+  -->
+  <swim:Function name="setBootSystem">
+   <!-- GET THE RUNNING CONFIG -->
+   <!--d:ExecuteShowCommand returnVar="result" command="show running-config"
+                         ip="${Device.ipAddress}"/-->
+   <glib:executeShowCommand returnVar="result" cmd="show running-config"  deviceIpAddress="${Device.ipAddress}"/>
+   <j:if test="${result.getSuccessStatus()==false}">
+    <j:choose>
+	 <j:when test="${NEED_RELOAD==true}">
+	  <swim:Log type="LOGDEBUG" message="Unable to get running configuration to analyze and set boot system."/>
+      <swim:JobStatus result="Fail"
+                          message="Unable to get running configuration to analyze and set boot system."/>
+      <swim:Return/>
+	 </j:when>
+	 <j:otherwise>
+	  <swim:Log type="LOGDEBUG" message="Unable to get running configuration to analyze and capture needed boot system changes."/>
+      <swim:JobStatus result="Fail"
+                          message="Unable to get running configuration to analyze and capture needed boot system changes"/>
+      <swim:Return/>
+	 </j:otherwise>
+	</j:choose>
+   </j:if>
+   <!-- SPLIT THE RUNNING CONFIG INTO LINES TO GET THE BOOT PATHS -->
+   <u:Split input="${result.getOutput()}" returnVar="lines"/>
+   <swim:Create returnVar="first" type="Boolean" value="true"/>
+   <swim:Create returnVar="needChange" type="Boolean" value="true"/>
+   <swim:Create returnVar="bootCmds" type="List"/>
+   <swim:For var="line" items="${lines}">
+    <su:contains returnVar="contains" on="${line}" token="boot system"/>
+    <j:if test="${contains==true}">
+     <u:Trim returnVar="trimedLine" on="${line}"/>
+     <su:contains returnVar="contains" on="${trimedLine}" token=" ${imageFullNameWithPath}"/>
+     <j:choose>
+      <j:when test="${contains == true &amp;&amp; first == ture}">
+       <!-- If this is the first command, there is no need to change. -->
+       <j:if test="${first==true}">
+	    <j:choose>
+	     <j:when test="${NEED_RELOAD==true}">
+	      <swim:JobLog ip="${Device.ipAddress}"
+                  message="Boot command is already configured to be ${imageFullNameWithPath}"/>
+		 </j:when>
+	     <j:otherwise>
+		  <swim:JobLog ip="${Device.ipAddress}"
+                  message="Boot command is already configured to be ${imageFullNameWithPath}, not capturing anything for before reload"/>
+		  <swim:JobLog ip="${Device.ipAddress}"
+                  message="Note any accidental reload would bring the device to image ${imageFullNameWithPath}"/>
+	     </j:otherwise>
+	    </j:choose>
+		<swim:Create returnVar="needChange" type="Boolean" value="false"/>
+		<swim:Break/>
+       </j:if>
+      </j:when>
+      <j:otherwise>
+       <u:Add on="${bootCmds}" param="${line}"/>
+       <swim:Create returnVar="first" type="Boolean" value="false"/>
+	  </j:otherwise>
+     </j:choose>
+    </j:if>
+   </swim:For>
+   <!-- Required boot command is either not present nor is not the first boot command -->
+   <j:if test="${needChange==true}">
+    <j:choose>
+	 <j:when test="${NEED_RELOAD==true}">
+	  <j:set var="sb" value=""/>
+      <!-- Create a no of all existing boot commands -->
+      <swim:For var="bootcmd" items="${bootCmds}">
+       <j:set var="sb" value="${sb}no ${bootcmd} &#10;"/>
+      </swim:For>
+      <!-- Add the required boot commands -->
+      <j:set var="sb" value="${sb}boot system flash ${imageFullNameWithPath} &#10;"/>
+      <!-- Now, add the existing boot commands -->
+      <swim:For var="bootcmd" items="${bootCmds}">
+       <j:set var="sb" value="${sb}${bootcmd} &#10;"/>
+      </swim:For>
+      <!-- Execute the resulting configuration on the device -->
+      <d:ExecuteConfigCommand returnVar="result" command="${sb}"
+                            ip="${Device.ipAddress}"/>
+      <glib:parseErrorFromOutput returnVar="error"
+                               output="${result.getOutput()}"/>
+      <j:if test="${error!=null}">
+       <swim:Throw message="${command} failed on device with error: ${result.output}"/>
+      </j:if>
+	 </j:when>
+	 <j:otherwise>
+	  <j:set var="sb" value=""/>
+      <!-- Create a no of all existing boot commands -->
+      <swim:For var="bootcmd" items="${bootCmds}">
+       <j:set var="sb" value="${sb}no ${bootcmd} &#10;"/>
+      </swim:For>
+      <!-- Add the required boot commands -->
+      <j:set var="sb" value="${sb}boot system falsh ${imageFullNameWithPath} &#10;"/>
+      <!-- Now, add the existing boot commands -->
+      <swim:For var="bootcmd" items="${bootCmds}">
+       <j:set var="sb" value="${sb}${bootcmd} &#10;"/>
+      </swim:For>
+      <!-- Add the resulting configuration as pre commands to reload -->
+      <swim:AddPreReloadCmd cmd="config t &#10;${sb} &#10;exit &#10;"/>
+	 </j:otherwise>
+	</j:choose>
+   </j:if>
+  </swim:Function>
+  
+  <!--
+  MOP: Upgrade procedure: point 7: divert trafic
+  -->
+  <swim:Function name ="divertTrafic">
+  <swim:Catch var="ex">
+    <functionCall:executeShowCommandAndGetOutput returnVar="op" cmd="show running-config" Device="${Device}"/> 
+   </swim:Catch>
+   <j:choose>
+    <j:when test="${ex !=null}">
+	 <swim:JobLog ip="${Device.ipAddress}" message="Exception while  diverting trafic : ${ex.getReason()}"/>
+     <swim:JobStatus result="Fail" message="Error : ${ex.getReason()}."/>
+	 <swim:Return/>
+	</j:when>
+	<j:otherwise>
+	 <j:set var="isisRegex" value = "^\s*ip\srouter\sisis\s(\d+)[^\d]*.*"/>
+	 <j:set var="ospfRegex" value = "^\s*router\sospf\s*(\d+)[^\d]*.*"/>
+	 <j:set var="IPVospfRegex" value = "^\s*([^\s]+)\s+router\sospf\s*(\d+)[^\d]*.*"/>
+	 <j:set var="divertCommand" value =""/>
+	 <u:Split returnVar="lines" input="${op}"/>		
+     <swim:For var="line" items="${lines}">
+	  <u:Match input="${line}" regex="${isisRegex}"  vars="isisNum"/>
+	  <j:if test="${MATCHED}">
+	   <j:set var="divertCommand" value="${divertCommand}router isis ${isisNum}&#10;"/>
+	   <j:choose>
+	    <j:when test="${isNo == true}">
+		 <j:set var="divertCommand" value="${divertCommand}no set-overload-bit&#10;"/>
+	    </j:when>
+	    <j:otherwise>
+		 <j:set var="divertCommand" value="${divertCommand}set-overload-bit&#10;"/>
+	    </j:otherwise>
+	   </j:choose>
+	  </j:if>
+	
+      <u:Match input="${line}" regex="${ospfRegex}" vars="ospfNum"/>
+	   <j:if test="${MATCHED}">
+	   <j:set var="divertCommand" value="${divertCommand}router ospf ${ospfNum}&#10;"/>
+	   <j:choose>
+	    <j:when test="${isNo == true}">
+		 <j:set var="divertCommand" value="${divertCommand}no max-metric router-lsa on-startup 86400&#10;"/>
+		 <j:set var="divertCommand" value="${divertCommand}no max-metric router-lsa&#10;"/>
+	    </j:when>
+	    <j:otherwise>
+		 <j:set var="divertCommand" value="${divertCommand}max-metric router-lsa on-startup 86400&#10;"/>
+	    </j:otherwise>
+	   </j:choose>
+	  </j:if>
+       <!--
+       <u:Match input="${line}" regex="${IPVospfRegex}" vars="ipvText,ospfNum"/>
+	   <j:if test="${MATCHED}">
+	   <j:set var="divertCommand" value="${divertCommand} ${ipvText} router ospf ${ospfNum}&#10;"/>
+	   <j:choose>
+	    <j:when test="${isNo == true}">
+		 <j:set var="divertCommand" value="${divertCommand}no max-metric router-lsa on-startup 86400&#10;"/>
+		 <j:set var="divertCommand" value="${divertCommand}no max-metric router-lsa&#10;"/>
+	    </j:when>
+	    <j:otherwise>
+		 <j:set var="divertCommand" value="${divertCommand}max-metric router-lsa on-startup 86400&#10;"/>
+	    </j:otherwise>
+	   </j:choose>
+	  </j:if>
+      -->	  
+	 </swim:For>
+	</j:otherwise>
+   </j:choose>
+   <j:choose>
+	<j:when test="${NEED_RELOAD==true}">
+     <swim:JobLog ip="${Device.ipAddress}" message="Starting to divert trafic"/>
+     <swim:JobLog ip="${Device.ipAddress}" message="Configuring router isis,set-overload-bit,router ospf and max-metric router-lsa on-startup 86400."/>
+     <j:choose>
+	  <j:when test="${isNo == true}">
+	   <d:ExecuteConfigCommand returnVar="result" ip="${Device.ipAddress}"
+                            command="${divertCommand}&#10;exit&#10;"/>
+	  </j:when>
+	  <j:otherwise>
+	   <d:ExecuteConfigCommand returnVar="result" ip="${Device.ipAddress}"
+                            command="${divertCommand}&#10;exit&#10;"/>
+	  </j:otherwise>
+	 </j:choose>
+     <j:choose>
+      <j:when test="${result != null}">
+       <j:choose>
+        <j:when test="${result.getError() != null }">
+	     <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+         <swim:JobStatus result="Fail" message="Error : ${result.getError()}."/>
+	     <swim:Return/>
+        </j:when>
+	    <j:when test="${result.getOutput() != null}">
+	     <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+	     <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+         <j:if test="${error!=null}">
+		  <swim:JobStatus result="Fail" message="Error : ${error}."/>
+	      <swim:Return/>
+         </j:if>
+	    </j:when>
+       </j:choose>
+	  </j:when>
+	  <j:otherwise>
+	   <swim:JobStatus result="Fail" message="command result is null."/>
+	   <swim:Return/>
+	  </j:otherwise>
+     </j:choose>
+	 <swim:JobLog ip="${Device.ipAddress}" message="completed configuration related to divert trafic"/>
+	</j:when>
+	<j:otherwise>
+	 <swim:AddPreReloadCmd cmd="config t &#10;${divertCommand}&#10;exit&#10;exit&#10;"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+  <!--
+  MOP: Upgrade procedure: point 8: write mem
+  -->
+  <swim:Function name ="writeMem">
+   <j:choose>
+	<j:when test="${NEED_RELOAD==true}">
+     <swim:JobLog ip="${Device.ipAddress}" message="Starting write memory"/>
+     <d:ExecuteCommand returnVar="result" command="write memory&#10;&#10;&#10;" ip="${Device.ipAddress}"/>
+     <j:choose>
+      <j:when test="${result != null}">
+       <j:choose>
+        <j:when test="${result.getError() != null }">
+	     <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+         <swim:JobStatus result="Fail" message="Error : ${result.getError()}."/>
+	     <swim:Return/>
+        </j:when>
+	    <j:when test="${result.getOutput() != null}">
+	     <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+	     <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+         <j:if test="${error!=null}">
+		  <swim:JobStatus result="Fail" message="Error : ${error}."/>
+	      <swim:Return/>
+         </j:if>
+	    </j:when>
+       </j:choose>
+	  </j:when>
+	  <j:otherwise>
+	   <swim:JobStatus result="Fail" message="command result is null."/>
+	   <swim:Return/>
+	  </j:otherwise>
+     </j:choose>
+	 <swim:JobLog ip="${Device.ipAddress}" message="completed write memory."/>
+	</j:when>
+	<j:otherwise>
+	 <swim:AddPreReloadCmd cmd="write memory&#10;&#10;&#10;"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>	 
+  
+  <!-- same writemem function as above but it does not set the job status to fail in case of a write failure -->
+   <swim:Function name ="writeMemWithoutJobFail">
+        <swim:JobLog ip="${Device.ipAddress}" message="Starting write memory"/>
+        <d:ExecuteCommand returnVar="result" command="write memory&#10;&#10;&#10;" ip="${Device.ipAddress}"/>
+        <j:choose>
+            <j:when test="${result != null}">
+                <j:choose>
+                    <j:when test="${result.getError() != null }">
+                        <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+                        <swim:Return/>
+                    </j:when>
+                    <j:when test="${result.getOutput() != null}">
+                        <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+                        <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+                        <j:if test="${error!=null}">
+                            <swim:JobLog ip="${Device.ipAddress}"  message="Error : ${error}."/>
+                            <swim:Return/>
+                        </j:if>
+                    </j:when>
+                </j:choose>
+            </j:when>
+            <j:otherwise>
+                <swim:JobLog ip="${Device.ipAddress}"  message="command result is null."/>
+                <swim:Return/>
+            </j:otherwise>
+        </j:choose>
+        <swim:JobLog ip="${Device.ipAddress}" message="completed write memory."/>  
+    </swim:Function>
+  
+  <!--
+  MOP: Upgrade procedure: point 9: Verify boot variables
+  Input:
+   * bootPathSet :
+  -->
+  <swim:Function name ="verifyBootVeriables">
+   <su:replaceAll returnVar ="bootPathRegex" on="${bootPathSet}"  regex=":/" replacement=".\/"/>
+   <j:choose>
+	<j:when test="${NEED_RELOAD==true}">
+     <swim:JobLog ip="${Device.ipAddress}" message="Starting to verify boot variables"/>
+     <!--d:ExecuteCommand returnVar="result" command="show bootvar" ip="${Device.ipAddress}"/-->
+	 <glib:executeShowCommand returnVar="result" cmd="show bootvar" deviceIpAddress="${Device.ipAddress}"/>
+     <j:choose>
+      <j:when test="${result != null}">
+       <j:choose>
+        <j:when test="${result.getError() != null }">
+	     <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+         <swim:JobStatus result="Fail" message="Error : ${result.getError()}."/>
+	     <swim:Return/>
+        </j:when>
+	    <j:when test="${result.getOutput() != null}">
+	     <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+	     <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+		 <j:choose>
+          <j:when test="${error!=null}">
+		   <swim:JobStatus result="Fail" message="Error : ${error}."/>
+	       <swim:Return/>
+          </j:when>
+		  <j:otherwise>
+		   <!-- -->
+		   <j:set var="bootvariableRegex" value="^BOOT\s+variable\s*=\s*.*(${bootPathRegex}),.*"/>
+		   <j:set var="standbyBootvariableRegex" value="^Standby\s+BOOT\s+variable\s*=\s*.*(${bootPathRegex}),.*"/>
+		   <j:set var="configRegister" value="^Configuration\s+register\s+is\s+(\S+).*"/>
+		   <j:set var="standByConfigRegister" value="^Standby\sConfiguration\s+register\s+is\s+(\S+).*"/>
+		   
+		   <j:set var="bootvariableRegexMatched" value="false"/>
+		   <j:set var="standbyBootvariableRegexMatched" value="false"/>
+		   <j:set var="configRegisterMatched" value="false"/>
+		   <j:set var="standByConfigRegisterMatched" value="false"/>
+		   
+		   <u:Split returnVar="lines" input="${result.getOutput()}"/>		
+           <swim:For var="line" items="${lines}">
+			<j:if test ="${bootvariableRegexMatched == false}">
+			 <u:Match input="${line}" regex="${bootvariableRegex}" vars="boot"/>
+			 <j:if test="${MATCHED}">
+			  <j:set var="bootvariableRegexMatched" value="true"/>
+			  <j:choose>
+			   <j:when test="${boot == bootPathSet}">
+			    <swim:JobLog ip="${Device.ipAddress}" message="Varified boot variable as ${boot}"/>
+			   </j:when>
+			   <j:otherwise>
+			    <swim:JobStatus result="Fail" message="Could not match boot variable for ${bootPathSet} found ${boot}"/>
+	            <swim:Return/>
+			   </j:otherwise>
+			  </j:choose>
+			 </j:if>
+			</j:if>
+			
+			<j:if test ="${configRegisterMatched == false}">
+			 <u:Match input="${line}" regex="${configRegister}" vars="configRegisterValue"/>
+			 <j:if test="${MATCHED}">
+			  <j:set var="configRegisterMatched" value="true"/>
+			  <j:choose>
+			   <j:when test="${configRegisterValue == '0x2102'}">
+			    <swim:JobLog ip="${Device.ipAddress}" message="Varified config register as ${configRegisterValue}"/>
+			   </j:when>
+			   <j:otherwise>
+			    <swim:JobStatus result="Fail" message="Could not match config register found ${configRegisterValue}"/>
+	            <swim:Return/>
+			   </j:otherwise>
+			  </j:choose>
+			 </j:if>
+			</j:if>
+			
+			<j:if test ="${standbyBootvariableRegexMatched == false}">
+			 <u:Match input="${line}" regex="${standbyBootvariableRegex}" vars="standByBoot"/>
+			 <j:if test="${MATCHED}">
+			  <j:set var="standbyBootvariableRegexMatched" value="true"/>
+			  <j:choose>
+			   <j:when test="${standByBoot == bootPathSet}">
+			    <swim:JobLog ip="${Device.ipAddress}" message="Varified standby boot variable as ${standByBoot}"/>
+			   </j:when>
+			   <j:otherwise>
+			    <swim:JobStatus result="Fail" message="Could not match standby boot variable for ${bootPathSet} found ${standByBoot}"/>
+	            <swim:Return/>
+			   </j:otherwise>
+			  </j:choose>
+			 </j:if>
+			</j:if>
+			
+			<j:if test ="${standByConfigRegisterMatched == false}">
+			 <u:Match input="${line}" regex="${standByConfigRegister}" vars="standByConfigRegisterValue"/>
+			 <j:if test="${MATCHED}">
+			  <j:set var="standByConfigRegisterMatched" value="true"/>
+			  <j:choose>
+			   <j:when test="${standByConfigRegisterValue == '0x2102'}">
+			    <swim:JobLog ip="${Device.ipAddress}" message="Varified stand by config register as ${standByConfigRegisterValue}"/>
+			   </j:when>
+			   <j:otherwise>
+			    <swim:JobStatus result="Fail" message="Could not match standby config register found ${standByConfigRegisterValue}"/>
+	            <swim:Return/>
+			   </j:otherwise>
+			  </j:choose>
+			 </j:if>
+			</j:if>
+		   </swim:For>
+		   
+		   <j:if test="${!bootvariableRegexMatched ||! standbyBootvariableRegexMatched|| !configRegisterMatched || !standByConfigRegisterMatched}">
+		    <swim:JobStatus result="Fail" message="Unable to verify boot vars , output is ${result.getOutput()}"/>
+	        <swim:Return/>
+		   </j:if>
+		  </j:otherwise>
+		 </j:choose>
+	    </j:when>
+       </j:choose>
+	  </j:when>
+	  <j:otherwise>
+	   <swim:JobStatus result="Fail" message="command result is null."/>
+	   <swim:Return/>
+	  </j:otherwise>
+     </j:choose>
+	 <swim:JobLog ip="${Device.ipAddress}" message="completed varification of bootvar."/>
+	</j:when>
+	<j:otherwise>
+	<!-- ANAND -->
+	 <swim:AddPreReloadCmd cmd="write mem&#10;&#10;&#10;"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+ 
+  <!--
+  Executes given show command and returns output string .
+  Input:
+   * Device : the device bean
+   * cmd : show command to execute
+  Output: 
+   * the output string.
+  Throws :
+     if command has error or command output is null. 
+  -->
+  <swim:Function name ="executeShowCommandAndGetOutput">
+   <j:choose>
+    <j:when test="${cmd != null}">
+     <swim:JobLog ip="${Device.ipAddress}" message="Executing command : ${cmd}"/>
+     <!--d:ExecuteShowCommand returnVar="result" command="${cmd}" refreshTime="0" ip="${Device.ipAddress}"/!-->
+	 <j:choose>
+	  <j:when test="${label != null}">
+	   <glib:executeShowCommand returnVar="result" cmd="${cmd}"  deviceIpAddress="${Device.ipAddress}" label="${label}_${cmd}"/>
+	  </j:when>
+	  <j:otherwise>
+	   <glib:executeShowCommand returnVar="result" cmd="${cmd}"  deviceIpAddress="${Device.ipAddress}"/>
+	  </j:otherwise>
+	 </j:choose>
+     <j:choose>
+      <j:when test="${result != null}">
+       <j:choose>
+        <j:when test="${result.getError() != null }">
+	     <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+         <swim:Throw message="${result.getError()}"/>
+        </j:when>
+	    <j:when test="${result.getOutput() != null}">
+	     <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+	     <glib:parseErrorFromOutput returnVar="error"
+                               output="${result.getOutput()}"/>
+         <j:if test="${error!=null}">
+          <swim:Throw message="'${cmd}' failed on device with error: ${result.getOutput()}"/>
+         </j:if>
+	     <swim:Return varName="${returnVar}" value="${result.getOutput()}"/>
+	    </j:when>
+       </j:choose>
+	  </j:when>
+	  <j:otherwise>
+	   <swim:Throw message="${cmd} command result is null."/>
+	  </j:otherwise>
+	 </j:choose>
+	</j:when>
+	<j:otherwise>
+	 <swim:Throw message="Input varable cmd is null."/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>	
+
+  <!--
+  MOP: Upgrade procedure: point 10: Identify supervisor.
+  -->
+  <swim:Function name="identifySupervisorModules">
+   <swim:JobLog ip="${Device.ipAddress}" message="Trying to identify supervisor modules"/>
+   <swim:Catch var="showModException">
+    <functionCall:executeShowCommandAndGetOutput returnVar="output" cmd="show mod" Device="${Device}"/> 
+   </swim:Catch>
+   
+   <j:choose>
+    <j:when test="${showModException != null}">
+	 <swim:JobStatus result="Fail" message="Unable to identify supervisor modules, ${showModException.getReason()}"/>
+	 <swim:Return/>
+	</j:when>
+	<j:when test="${output == null}">
+	 <swim:JobStatus result="Fail" message="Unable to identify supervisor modules,output of show mod command is null"/>
+	 <swim:Return/>
+	</j:when>
+	<j:otherwise>
+	 <j:set var="activeModuleFound" value="false"/>
+	 <j:set var="standByModuleFound" value="false"/>
+	 <j:set var="activeModuleRegex" value="^\s*(\d+)\s+\d+\s+.*\([A|a]cti.*"/>
+	 <j:set var="standByModuleRegex" value="^\s*(\d+)\s+\d+\s+.*(?:\((?:[H|h][O|o][T|t])|(?:[C|c][O|o][L|l][D|d])).*"/>
+	 <u:Split returnVar="lines" input="${output}"/>		
+     <swim:For var="line" items="${lines}">
+	  <j:if test ="${activeModuleFound == false}">
+	   <u:Match input="${line}" regex="${activeModuleRegex}" vars="activeModuleValue"/>
+		<j:if test="${MATCHED}">
+		 <j:set var="activeModuleFound" value="true"/>
+		</j:if>
+	  </j:if>
+	  <j:if test ="${standByModuleFound == false}">
+	   <u:Match input="${line}" regex="${standByModuleRegex}" vars="standByModuleValue"/>
+		<j:if test="${MATCHED}">
+		 <j:set var="standByModuleFound" value="true"/>
+		</j:if>
+	  </j:if>
+	  
+	  <j:if test="${activeModuleFound &amp;&amp; standByModuleFound}">
+	   <swim:Break/>
+	  </j:if>
+	 </swim:For>
+	 
+	 <j:choose>
+	 <j:when test="${activeModuleFound &amp;&amp; standByModuleFound}">
+	   <swim:JobLog ip="${Device.ipAddress}" message="found supervisor module active as ${activeModuleValue} and stand by as ${standByModuleValue}"/>
+	   <functionCall:resetStandBySupervisor standByModuleValue="${standByModuleValue}"/>
+	 </j:when>
+	 <j:otherwise>
+	  <swim:JobStatus result="Fail" message="Unable to identify supervisor modules. Output is ${output}"/>
+	 </j:otherwise>
+	 </j:choose>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+  <!--
+  Executes given command and returns output string .
+  Input:
+   * Device : the device bean
+   * cmd : command to execute
+  Output: 
+   * the output string.
+  Throws :
+     if command has error or command output is null. 
+  -->
+  <swim:Function name ="executeCommandAndGetOutput">
+   <j:choose>
+    <j:when test="${cmd != null}">
+     <swim:JobLog ip="${Device.ipAddress}" message="Executing command : ${cmd}"/>
+     <d:ExecuteCommand returnVar="result" command="${cmd}" refreshTime="1200000" ip="${Device.ipAddress}"/>
+     <j:choose>
+      <j:when test="${result != null}">
+       <j:choose>
+        <j:when test="${result.getError() != null }">
+	     <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+         <swim:Throw message="${result.getError()}"/>
+        </j:when>
+	    <j:when test="${result.getOutput() != null}">
+	     <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+	     <glib:parseErrorFromOutput returnVar="error"
+                               output="${result.getOutput()}"/>
+         <j:if test="${error!=null}">
+          <swim:Throw message="'${cmd}' failed on device with error: ${result.getOutput()}"/>
+         </j:if>
+	     <swim:Return varName="${returnVar}" value="${result.getOutput()}"/>
+	    </j:when>
+       </j:choose>
+	  </j:when>
+	  <j:otherwise>
+	   <swim:Throw message="${cmd} command result is null."/>
+	  </j:otherwise>
+	 </j:choose>
+	</j:when>
+	<j:otherwise>
+	 <swim:Throw message="Input varable cmd is null."/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>	
+  
+  <!--
+  MOP: Upgrade procedure: point 11: Reset standBy supervisor.
+  -->
+  <swim:Function name="resetStandBySupervisor">
+   <swim:JobLog ip="${Device.ipAddress}" message="reseting standby supervisor module ${standByModuleValue}"/>
+   <swim:Catch var="moduleResetException">
+    <functionCall:executeCommandAndGetOutput returnVar="output" cmd="hw-module module ${standByModuleValue} reset&#10;&#10;&#10;" Device="${Device}"/> 
+   </swim:Catch>
+   
+   <j:choose>
+    <j:when test="${moduleResetException != null}">
+	 <swim:JobStatus result="Fail" message="Unable to reset hw-module ${standByModuleValue}.${moduleResetException.getReason()}"/>
+	 <swim:Return/>
+	</j:when>
+	<j:when test="${output == null}">
+	 <swim:JobStatus result="Fail" message="Unable to verify if command hw-module module ${standByModuleValue} reset passed as output of command is null."/>
+	 <swim:Return/>
+	</j:when>
+	<j:otherwise>
+	 <!-- As this reloads stand by supervisor we need to wait for reload to complete and stand by supervisor to come to (Cold)-->
+	 <swim:Catch var="UDException">
+	  <u:Sleep time="300000"/>
+	  <functionCall:waitForStandBySupervisorToReset Device="${Device}" MaxWait="1800000"/>
+	 </swim:Catch>
+	 <j:if test="${UDException != null}">
+	  <swim:JobStatus result="Fail"
+                          message="Unable to verify if command hw-module module ${standByModuleValue} reset completed, ${UDException.getReason()}"/>
+	  <swim:Return/>
+	 </j:if>
+	 <swim:JobLog ip="${Device.ipAddress}" message="Reset completed for standby supervisor module ${standByModuleValue}"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+  <!--
+  Waits standby supervisor reset to complete.
+  Input:
+   * Device : the device bean
+   * MaxWait:
+  Throws :
+     if max time elaspled. 
+  -->
+  <swim:Function name ="waitForStandBySupervisorToReset">
+   <swim:JobLog ip="${Device.ipAddress}" message="Waiting for stand by supervisor reset to complete."/>
+   <j:if test="${MaxWait &gt; 0}">
+   <swim:Catch var="ex">
+    <functionCall:executeShowCommandAndGetOutput returnVar="op" cmd="show mod" Device="${Device}"/> 
+   </swim:Catch>
+   <j:choose>
+    <j:when test="${ex !=null}">
+	 <!--
+	 Sleep for 2 min and try again.
+	 -->
+	 <j:set var="MaxWait" value="${MaxWait - 120000}"/>
+	 <u:Sleep time="120000"/>
+	 <j:if test="${MaxWait &gt; 0}">
+	  <j:remove var="ex"/>
+	 </j:if>
+	 <functionCall:waitForStandBySupervisorToReset Device="${Device}" MaxWait="${MaxWait}"/>
+	 <swim:Return/>
+	</j:when>
+	<j:otherwise>
+	   <j:set var="isDone" value="false"/>
+	   <swim:Catch var="timeTaken">
+	    <functionCall:parseAndCheckStandByResetDone returnVar="isDone" output="${op}"/>
+	   </swim:Catch>
+	   <j:choose>
+	    <j:when test="${isDone == true}">
+		 <!--
+		  stand by supervisor reset is complete
+		 -->
+		 <swim:JobLog ip="${Device.ipAddress}" message="Standby supervisor reset is complete ..."/>
+		 <swim:Return/>
+		</j:when>
+		<j:otherwise>
+		 <j:set var="MaxWait" value="${MaxWait - 120000}"/>
+	     <u:Sleep time="120000"/>
+	     <functionCall:waitForStandBySupervisorToReset Device="${Device}" MaxWait="${MaxWait}"/>
+		 <swim:Return/>
+		</j:otherwise>
+	   </j:choose>
+	</j:otherwise>
+   </j:choose>
+   </j:if>
+   <swim:Throw message="Unable to determine standby supervisor reset operation is complete."/>
+  </swim:Function>
+  
+  <!--
+  parses show mod output string to determine if standby supervisor reset is complete.
+  Input:
+   * 
+   * output : show mod command output string.
+  Output: 
+   * boolean. 
+  -->
+  <swim:Function name ="parseAndCheckStandByResetDone">
+   <j:choose>
+    <j:when test="${output != null}">
+	 <j:set var="standByModuleRegex" value="^\s*(\d+)\s+\d+\s+.*\((?:[C|c][O|o][L|l][D|d]|[H|h][O|o][T|t]|[W|w][A|a][R|r][M|m]).*"/>
+	 
+	 <!--  For every line of output match current regex -->
+	 <u:Split returnVar="lines" input="${output}"/>		
+     <swim:For var="line" items="${lines}">
+	   <u:Match input="${line}" regex="${standByModuleRegex}"/>
+       <j:if test="${MATCHED}">
+		<swim:Return varName="${returnVar}" value="true"/>
+	   </j:if>
+     </swim:For>
+	</j:when>
+   </j:choose>
+   <swim:Return varName="${returnVar}" value="false"/>
+  </swim:Function>
+  
+  <!--
+   MOP: Upgrade procedure: point 12,13 and 14 and: redudency force-switchover , write mem and verify redudency is restored.
+  -->
+  <swim:Function name="redundancyForceSwitchover">
+  <swim:Stage stage="STARTED" stageName="redundancyForceSwitchover" message="Starting Redundancy Force Switchover"/>
+   <swim:JobLog ip="${Device.ipAddress}" message="Starting redudency switchover "/>
+   <swim:Catch var="redSwException">
+    <functionCall:executeCommandAndGetOutput returnVar="output" cmd="redundancy force-switchover&#10;y&#10;&#10;" Device="${Device}"/> 
+   </swim:Catch>
+   
+   <j:choose>
+    <j:when test="${redSwException != null}">
+	 <j:choose>
+	  <j:when test="${reattemptCount &gt; 1}">
+	  <swim:JobLog ip="${Device.ipAddress}" message="Redudency switchover failed ${redSwException.getReason()}, trying again.. "/>
+	  <j:remove var="redSwException"/>
+	  <j:set var="reattemptCount" value ="${reattemptCount-1}"/>
+	  <u:Sleep time="300000"/>
+	  <functionCall:redundancyForceSwitchover reattemptCount="${reattemptCount}"/>
+	 </j:when>
+	 <j:otherwise>
+	  <j:remove var="redSwException"/>
+	  <swim:JobLog ip="${Device.ipAddress}" message="Redudency switchover failed ${redSwException.getReason()}, Continuing anyways again.. "/>
+	  <swim:Stage stage="COMPLETE" stageName="redundancyForceSwitchover" message="Completed Redundancy Force Switchover"/>
+	  <swim:Return/>
+	 </j:otherwise>
+	 </j:choose>
+	</j:when>
+	<j:when test="${output == null}">
+	 <!--
+	 ANAND
+	 -->
+	 <!--swim:JobStatus result="Fail" message="Unable to get output of redudency swithover.Continuing anyways..."/-->
+	 <swim:JobLog ip="${Device.ipAddress}" message="Unable to get output of redudency swithover.Continuing anyways..."/>
+	 <swim:Catch var="switchoverValidationException">
+	  <u:Sleep time="180000"/>
+	  <swim:Stage stage="STARTED" stageName="WAITSWITCHOVER" message="Waiting for Redundancy Switchover to complete"/>
+	  <functionCall:waitForSwitchoverToComplete Device="${Device}" MaxWait="1800000"/>
+	  <swim:Stage stage="COMPLETE" stageName="WAITSWITCHOVER" message="Completed Redundancy Switchover"/>
+	 </swim:Catch>
+	 <j:if test="${switchoverValidationException != null}">
+	  <swim:JobStatus result="Fail"
+                          message="Unable to verify if redudency force-switchover completed successfully, ${switchoverValidationException.getReason()}"/>
+	  <swim:Return/>
+	 </j:if>
+	 <swim:JobLog ip="${Device.ipAddress}" message="Redudency force-switchover completed successfully."/>
+	 <functionCall:writeMem/>
+	 <swim:Return/>
+	</j:when>
+	<j:otherwise>
+	<swim:Catch var="switchoverValidationException">
+	  <u:Sleep time="180000"/>
+	  <functionCall:waitForSwitchoverToComplete Device="${Device}" MaxWait="1800000"/>
+	 </swim:Catch>
+	 <j:if test="${switchoverValidationException != null}">
+	  <swim:JobStatus result="Fail"
+                          message="Unable to verify if redudency force-switchover completed successfully, ${switchoverValidationException.getReason()}"/>
+	  <swim:Return/>
+	 </j:if>
+	 <swim:JobLog ip="${Device.ipAddress}" message="Redudency force-switchover completed successfully."/>
+	 <functionCall:writeMem/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+<!--
+  Waits standby supervisor reset to complete.
+  Input:
+   * Device : the device bean
+   * MaxWait:
+  Throws :
+     if max time elaspled. 
+  -->
+  <swim:Function name ="waitForSwitchoverToComplete">
+   <swim:Stage stage="EXECUTING" stageName="WAITSWITCHOVER" message="Executing Redundancy Switchover ${MaxWait}"/>
+   <swim:JobLog ip="${Device.ipAddress}" message="Waiting for switchover to complete."/>
+   <j:choose>
+    <j:when test="${MaxWait &gt; 0}">
+     <swim:Catch var="switchOverException">
+      <functionCall:executeShowCommandAndGetOutput returnVar="op" cmd="show redundancy" Device="${Device}"/> 
+     </swim:Catch>
+     <j:choose>
+      <j:when test="${switchOverException !=null}">
+	   <!--
+	   Sleep for 2 min and try again.
+	   -->
+	   <swim:JobLog ip="${Device.ipAddress}" message="command failed ${switchOverException.getReason()},retrying..."/>
+	   <j:remove var="switchOverException"/>
+	   <j:set var="MaxWait" value="${MaxWait - 120000}"/>
+	   <u:Sleep time="120000"/>
+	    <functionCall:waitForSwitchoverToComplete Device="${Device}" MaxWait="${MaxWait}"/>
+	    <swim:Return/>
+	   </j:when>
+	   <j:otherwise>
+	    <j:set var="isDone" value="false"/>
+	    <swim:Catch var="timeTaken">
+	     <functionCall:parseAndCheckSwitchOverDone returnVar="isDone" output="${op}"/>
+	    </swim:Catch>
+	    <j:choose>
+	     <j:when test="${isDone}">
+		  <!--
+		   stand by supervisor reset is complete
+		  -->
+		 <swim:JobLog ip="${Device.ipAddress}" message="Switchover is complete ..."/>
+		 
+		 <swim:Return/>
+		</j:when>
+		<j:otherwise>
+		 <j:set var="MaxWait" value="${MaxWait - 120000}"/>
+	     <u:Sleep time="120000"/>
+	     <functionCall:waitForSwitchoverToComplete Device="${Device}" MaxWait="${MaxWait}"/>
+		 <swim:Return/>
+		</j:otherwise>
+	   </j:choose>
+	  </j:otherwise>
+     </j:choose>
+    </j:when>
+    <j:otherwise>
+     <swim:Throw message="Unable to determine if switchover operation is complete."/>
+    </j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+  <!--
+  parses show mod output string to determine if standby supervisor reset is complete.
+  Input:
+   * 
+   * output : show mod command output string.
+  Output: 
+   * boolean. 
+  -->
+  <swim:Function name ="parseAndCheckSwitchOverDone">
+   <j:choose>
+	<j:when test="${output != null}">
+	 <j:set var="configuredRedundancyRegex" value=".*\s*[C|c]onfigured\s+[R|r]edundancy\s+[M|m]ode\s+.*(?:(?:[S|s][S|s][O|o])|(?:[R|r][P|p][R|r])).*"/>
+	 <j:set var="operatingRedundancyRegex" value=".*\s*[O|o]perating\s+[R|r]edundancy\s+[M|m]ode\s+.*(?:(?:[S|s][S|s][O|o])|(?:[R|r][P|p][R|r])).*"/>
+	 <j:set var="issuStateActiveRegex" value=".*\s*[C|c]urrent\s+[S|s]oftware\s+[S|s]tate\s+.*[A|a][C|c][T|t][I|i][V|v][E|e].*"/>
+	 <j:set var="issuStateStandbyRegex" value=".*\s*[C|c]urrent\s+[S|s]oftware\s+[S|s]tate\s+.*[S|s][T|t][A|a][N|n][D|d][B|b][Y|y]\s*[H|h][O|o][T|t].*"/>
+	   
+	 <j:set var="configuredRedundancyMatched" value="false"/>
+	 <j:set var="operatingRedundancyMatched" value="false"/>
+	 <j:set var="issuStateActiveReadyMatched" value="false"/>
+	 <j:set var="issuStateStandbyReadyMatched" value="false"/>
+	   
+	 <!--  For every line of output match current regex -->
+	 <u:Split returnVar="lines" input="${output}"/>		
+     <swim:For var="line" items="${lines}">
+	  <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : line is ${line}."/>
+	  <j:choose>
+	   <j:when test="${!configuredRedundancyMatched || !operatingRedundancyMatched || !issuStateActiveReadyMatched || !issuStateStandbyReadyMatched}">
+		<swim:Log type="LOGDEBUG" message="${Device.ipAddress} : one of the regex not matched."/>
+		<j:if test="${!configuredRedundancyMatched}">
+		 <u:Match input="${line}" regex="${configuredRedundancyRegex}"/>
+         <j:if test="${MATCHED}">
+		 <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : configured Redundancy Matched."/>
+		  <j:set var="configuredRedundancyMatched" value="true"/>
+		 </j:if>
+		</j:if>
+		
+		<j:if test="${operatingRedundancyMatched}">
+		 <j:if test="${!issuStateActiveReadyMatched}">
+		  <u:Match input="${line}" regex="${issuStateActiveRegex}"/>
+          <j:if test="${MATCHED}">
+		   <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : Active Matched."/>
+		   <j:set var="issuStateActiveReadyMatched" value="true"/>
+		  </j:if>
+		 </j:if>
+		</j:if>
+		
+		<j:if test="${!operatingRedundancyMatched}">
+		 <u:Match input="${line}" regex="${operatingRedundancyRegex}"/>
+         <j:if test="${MATCHED}">
+		  <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : operating Redundancy Matched."/>
+	      <j:set var="operatingRedundancyMatched" value="true"/>
+		 </j:if>
+		</j:if>
+		
+		<j:if test="${!issuStateStandbyReadyMatched}">
+		 <u:Match input="${line}" regex="${issuStateStandbyRegex}"/>
+         <j:if test="${MATCHED}">
+		  <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : STANDBY HOT Matched."/>
+		  <j:set var="issuStateStandbyReadyMatched" value="true"/>
+		 </j:if>
+		</j:if>
+	   </j:when>
+	   <j:otherwise>
+		<swim:Log type="LOGDEBUG" message="${Device.ipAddress} : Breaking for loop."/>
+		<swim:Break/>
+	   </j:otherwise>
+	  </j:choose>
+     </swim:For>
+	 
+	 <!-- check if all the regex are matched -->
+	 <j:choose>
+	  <j:when test="${!configuredRedundancyMatched}">
+	   <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : returning !configuredRedundancyMatched"/>
+	   <swim:Return varName="${returnVar}" value="false"/>
+	  </j:when>
+	  <j:when test="${!operatingRedundancyMatched}">
+	   <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : returning !operatingRedundancyMatched"/>
+	   <swim:Return varName="${returnVar}" value="false"/>
+	  </j:when>
+	  <j:when test="${!issuStateActiveReadyMatched}">
+	   <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : returning !issuStateActiveReadyMatched"/>
+	   <swim:Return varName="${returnVar}" value="false"/>
+	  </j:when>
+	  <j:when test="${!issuStateStandbyReadyMatched == null}">
+	  <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : returning !issuStateStandbyReadyMatched"/>
+	   <swim:Return varName="${returnVar}" value="false"/>
+	  </j:when>
+	 </j:choose>
+	 
+	 <!-- -->
+	 <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : returning all matched."/>
+	 <swim:Return varName="${returnVar}" value="true"/>
+	</j:when>
+    <j:otherwise>
+	 <swim:Log type="LOGDEBUG" message="${Device.ipAddress} : output is null"/>
+     <swim:Return varName="${returnVar}" value="false"/>
+    </j:otherwise>
+   </j:choose>
+   <swim:Return varName="${returnVar}" value="false"/>
+  </swim:Function>
+  
+  <!--
+  Execute the post install checks to make sure the device came up with the required image.
+  Global Variables:
+   * Device : The device bean. 
+  Inputs:
+   None.
+  Outputs:
+   None.
+  -->  
+  <swim:Function name="postInstallChecks">
+   <swim:Stage stage="STARTED" stageName="PostInstallChecks" message="Starting post install checks"/>
+   
+   <!--d:ExecuteShowCommand returnVar="result" command="show version" refreshTime="0" ip="${Device.ipAddress}"/-->
+   <glib:executeShowCommand returnVar="result" cmd="show version"  deviceIpAddress="${Device.ipAddress}"/>
+   <j:if test="${result== null || result.getSuccessStatus() == false || result.getOutput() == null}">
+	<swim:JobLog ip="${Device.ipAddress}" message="Unable to get the version after reload. Trying again .."/>
+	<u:Sleep time="120000"/>
+	<!--d:ExecuteShowCommand returnVar="result" command="show version" refreshTime="0" ip="${Device.ipAddress}"/-->
+	<glib:executeShowCommand returnVar="result" cmd="show version"  deviceIpAddress="${Device.ipAddress}"/>
+	<j:if test="${result== null || result.getSuccessStatus() == false || result.getOutput() == null}">
+	 <swim:JobLog ip="${Device.ipAddress}" message="Unable to get the version after reload. Trying again .."/>
+	 <u:Sleep time="120000"/>
+	 <!--d:ExecuteShowCommand returnVar="result" command="show version" refreshTime="0" ip="${Device.ipAddress}"/-->
+	 <glib:executeShowCommand returnVar="result" cmd="show version"  deviceIpAddress="${Device.ipAddress}"/>
+	 <j:if test="${result== null || result.getSuccessStatus() == false || result.getOutput() == null}">
+	  <swim:JobLog ip="${Device.ipAddress}" message="Unable to get the version after reload after three attempts."/>
+	  <swim:JobStatus result="Fail" message="Unable to get the version after reload after three attempts."/>
+	  <swim:Return/>
+	 </j:if>
+	</j:if>
+   </j:if>
+   <j:set var="showVersionOutput" value="${result.getOutput()}"/>
+   <glib:parseErrorFromOutput returnVar="hasError" output="${result.getOutput()}"/>
+   <j:if test="${hasError!=null }">
+	<swim:JobLog ip="${Device.ipAddress}" message="post install check failed with error : ${hasError}"/>
+	<swim:JobStatus result="Fail" message="post install check failed with error : ${hasError}"/>
+	<swim:Return/>
+   </j:if>
+   <functionCall:getVersion returnVar="dVersion" Output="${result.getOutput()}"/>
+   <j:if test="${dVersion!=null}">
+	<j:if test="${Image.oSVersion == dVersion}">
+	 <swim:JobLog ip="${Device.ipAddress}" message="completed post install"/>
+	 <swim:Stage stage="COMPLETE" stageName="PostInstallChecks" message="completed post install"/>
+	 <swim:Return/>
+	</j:if>
+   </j:if>
+   <swim:JobLog ip="${Device.ipAddress}" message="post install version check failed. Version found is: ${dVersion}"/>
+   <swim:JobStatus result="Fail" message="post install version check failed. Version found is: ${dVersion}"/>
+  </swim:Function>
+  
+  <!--
+  Evaluates the output of show version command to exctract the version information.
+  Globals:
+   None.
+  Inputs:
+   Output: the string output of the show version command.
+  Outputs: 
+   the version string.
+  Throws:
+   None
+  -->  
+  <swim:Function name="getVersion">
+	<u:Split returnVar="lines" input="${Output}" regex="&#13;?&#10;"/>		
+	<swim:For var="line" items="${lines}">
+	 <u:Match input="${line}" regex="^.*Version\s+([^,\s]+),?\s.*$" vars="Dev_Version"/>
+	 <j:if test="${MATCHED}">
+	  <swim:Return varName="${returnVar}" value="${Dev_Version}"/>
+	 </j:if>
+	</swim:For>
+   <swim:Return/>
+  </swim:Function>
+  
+  <!-- ******************************************************************************************** 
+  Performs standard pre-install chacks for IOS and IOSXE
+  Following are the preinstall checks currently done:
+   If the device and selected image os type is same or not.
+   If device and image version to be installed are different or not.
+   If the selected image is already running on device.
+   If the selected image is applicable to the current device.
+  Note this method and all installation stage related methods may set overall stage as complete or error.
+
+  Global Variables:
+   * Device: the device bean
+   * Image: Image being installed.
+  Inputs:
+   None.
+  Outputs:
+   None.
+  ***************************************************************************************************-->
+  <swim:Function name="preInstallChecks">
+   <swim:Stage stage="STARTED" stageName="preInstallChecks"
+             message="pre install checks"/>
+   <swim:Log type="LOGDEBUG"
+             message="Running pre install checks for device:${Device.ipAddress} "/>
+	
+   <j:choose>
+    <j:when test="${Device.oSName==null || Device.bootPath==null}">
+	 <j:set var="error"
+	  value="Unable to determine OS Version and boot file. Giving up"/>
+	</j:when>
+	<j:otherwise>
+	 <swim:Log type="LOGDEBUG"
+					message="OS on device: ${Device.oSName} OS in image: ${Image.oSName}"/>
+	 <j:if test="${Device.oSName!=null}">
+	  <su:isEqual returnVar="isSameOS" lhs="${Device.oSName}"
+					rhs="${Image.oSName}" ignoreCase="true"/>
+	 </j:if>
+	 <j:choose>
+	  <j:when test="${Device.oSName==null || isSameOS!=true}">
+	   <j:set var="error"
+			value="device OS: ${Device.oSName} is not compatible with image ${Image.oSName} for ip: ${Device.ipAddress}"/>
+	  </j:when>
+	  <j:otherwise>
+	   <glib:getFileNameFromPath returnVar="path" onPath="${Device.bootPath}"/>
+	   <swim:Log type="LOGDEBUG"
+		message="boot file on device: ${Device.ipAddress} is  ${path}. File to be installed is ${Image.name}"/>
+	   <swim:JobLog ip="${Device.ipAddress}"
+					message="boot file on device is  ${path}. File to be installed is ${Image.name}"/>
+	   <su:isEqual returnVar="isSame" lhs="${path}" rhs="${Image.name}"/>
+	   <j:choose>
+	    <j:when test="${isSame==true}">
+		 <swim:Log type="LOGDEBUG"
+					message="Image to be installed is already running on device: ${Device.ipAddress} . Not installing anymore."/>
+		 <swim:JobLog ip="${Device.ipAddress}"
+					message="Image to be installed is already running on device. Not installing anymore."/>
+		 <swim:Stage stage="COMPLETE" stageName="preInstallChecks"
+					message="Required image is already running. No install required"/>
+		 <swim:JobStatus result="Success"
+					message="Required image is already running. No install required"/>
+		 <swim:Return/>
+		 </j:when>
+		 <j:otherwise>
+		  <swim:JobLog ip="${Device.ipAddress}"
+					message="Image on device: ${path} Image to be installed: ${Image.name}"/>
+		  <!--
+		  <functionCall:getImagePrefix returnVar="toBePrefix" onString="${Image.name}"/>
+		  <functionCall:getImagePrefix returnVar="currentPrefix" onString="${path}"/>
+		  <j:if test="${toBePrefix !=null &amp;&amp; currentPrefix != null}">
+		   <su:isEqual returnVar="isEqual" lhs="${toBePrefix}"
+										rhs="${currentPrefix}"/>
+		   <j:if test="${isEqual!=true}">
+		    <functionCall:doExtendedCompartiblityCheck returnVar="isEqual" toPrefix="${toBePrefix}" fromPrefix="${currentPrefix}"/>
+			<j:if test="${isEqual!=true}">
+			 <j:set var="error"
+			        value="Image ${Image.name} is most probably not applicable to the selected device model ${Device.productModel}"/>
+			</j:if>
+		  </j:if>
+		  </j:if>
+		  -->
+		 </j:otherwise>
+		</j:choose>
+	   </j:otherwise>
+	  </j:choose>
+	 </j:otherwise>
+    </j:choose>
+    <swim:Stage stage="COMPLETE" stageName="preInstallChecks"
+               message="pre install checks completed"/>
+    <j:if test="${error!=null}">
+	<swim:JobLog ip="${Device.ipAddress}"
+              message="Error : ${error}"/>
+    <swim:JobStatus result="Fail"
+                    message="pre install checks failed : ${error}"/>
+   </j:if>
+  </swim:Function>
+  
+    <!-- ******************************************************************************************** 
+  Gets the prefix from an image name. For example, if the Image name is c1700-adventerprisek9-mz.124-25d.bin
+  this function returns c1700.
+   Inputs:
+	* onString: Name of the image to find the prefix for
+   Outputs:
+	The prefix of the image, if the image name contains "-". Returns null otherwise.
+  ***************************************************************************************************-->
+  <swim:Function name="getImagePrefix">
+   <su:contains returnVar="contains" on="${onString}" token="-"/>
+   <j:choose>
+    <j:when test="${contains == true}">
+	 <u:Match input="${onString}" regex="([^-]+)-.*" vars="prefixName"/>
+	 <j:choose>
+	  <j:when test="${MATCHED}">
+	   <swim:Return varName="${returnVar}" value="${prefixName}"/>
+	  </j:when>
+	  <j:otherwise>
+	   <swim:Return varName="${returnVar}"/>
+	  </j:otherwise>
+	 </j:choose>
+	</j:when>
+	<j:otherwise>
+	 <swim:Return varName="${returnVar}"/>
+	</j:otherwise>
+   </j:choose>
+  </swim:Function>
+  
+   <!-- ************************************************************************************************* 
+  Gets sub directory list of given directory :
+  Inputs:
+   * toPrefix:
+   * fromPrefix:   
+  Globals:
+   * None
+  Outputs:
+   returns true id extended compartiblity check matchs otherwise false.  
+  ****************************************************************************************************-->
+  <swim:Function name="doExtendedCompartiblityCheck">
+    <swim:Create returnVar="iscompartible" type="Boolean" value="false"/>
+    <j:if test="${toPrefix != null &amp;&amp;  fromPrefix!= null}">
+	  <j:set var="toPerfixWithExtraChar" value="${toPrefix}p"/>
+	  <su:isEqual returnVar="iscompartible" lhs="${toPerfixWithExtraChar}"
+										rhs="${fromPrefix}"/>
+	  <j:if test="${iscompartible!=true}">
+	   <j:set var="fromPerfixWithExtraChar" value="${fromPrefix}p"/>
+	   <su:isEqual returnVar="iscompartible" lhs="${toPrefix}"
+										rhs="${fromPerfixWithExtraChar}"/>
+	  </j:if>
+	  <j:if test="${iscompartible!=true}">
+	   <j:set var="fromPerfixWithExtraChar" value="${fromPrefix}e"/>
+	   <su:isEqual returnVar="iscompartible" lhs="${toPrefix}"
+										rhs="${fromPerfixWithExtraChar}"/>
+	  </j:if>
+	</j:if>
+	<swim:Return varName="${returnVar}" value="${iscompartible}"/>
+  </swim:Function>
+  
+  <!-- *****************************************************************************************************
+  Executes show issu state command and returns output string .
+  Input:
+   * Device : the device bean
+   * output : show issu state command output string.
+  Output: 
+   * the output string.
+  Throws :
+     if command has error or command output is null. 
+  **********************************************************************************************************-->
+  <swim:Function name ="executeShowIssuStateAndGetOutput">
+   <!--d:ExecuteShowCommand returnVar="result" command="show issu state" refreshTime="1200000" ip="${Device.ipAddress}"/-->
+   <glib:executeShowCommand returnVar="result" cmd="show issu state"  deviceIpAddress="${Device.ipAddress}"/>
+   <j:choose>
+    <j:when test="${result != null}">
+     <j:choose>
+      <j:when test="${result.getError() != null }">
+       <swim:Throw message="${result.getError()}"/>
+      </j:when>
+	  <j:when test="${result.getOutput() != null}">
+	   <swim:Return varName="${returnVar}" value="${result.getOutput()}"/>
+	  </j:when>
+     </j:choose>
+	 </j:when>
+	 <j:otherwise>
+	  <swim:Throw message="show issu state command result is null."/>
+	 </j:otherwise>
+	</j:choose>
+  </swim:Function>  
+  
+  <!--ISSU INSTALL -->
+  
+  <!-- ******************************************************************************************** 
+  Execute ISSU related commands.
+  Global Variables:
+   * Device : The device bean.
+   * isPureIssu : true if issu , false if issu fallback. 
+   * activeFullPath :
+   * standbyFullPath :
+   
+  Inputs:
+   None.
+  Outputs:
+   None.
+   Trrows:
+   Error if isPureIssu is false , and issu install fails.
+  ***************************************************************************************************-->  
+  <swim:Function name="issuInstall">
+   <swim:Stage stage="STARTED" stageName="ISSU OPERATION" message="Starting ISSU operations"/>
+   
+   <functionCall:issuLoadVersion isPureIssu="${isPureIssu}" activeFullPath="${activeFullPath}" standbyFullPath="${standbyFullPath}"/>
+   <j:if test="${engine_Local_Stage.complete!=true}">
+   <functionCall:issuRunVersion/>
+   </j:if>
+   <j:if test="${engine_Local_Stage.complete!=true}">
+   <functionCall:issuAcceptVersion/>
+   </j:if>
+   <j:if test="${engine_Local_Stage.complete!=true}">
+   <functionCall:issuCommitVersion/>
+   </j:if>
+   
+   <swim:Stage stage="COMPLETE" stageName="ISSU OPERATION" message="completed ISSU operations"/>
+	 
+  </swim:Function>
+  
+  
+    <!-- ******************************************************************************************** 
+  Execute ISSU load version command.
+  Global Variables:
+   * Device : The device bean.
+  Inputs:
+   * isPureIssu : true if issu , false if issu fallback.   
+   * activeFullPath 
+   * standbyFullPath=standbyFullPath
+  Outputs:
+   Throws:
+   Error if isPureIssu is false , and issu install fails.
+  ***************************************************************************************************-->  
+  <swim:Function name="issuLoadVersion">
+   <swim:Stage stage="STARTED" stageName="ISSU load version" message="Starting ISSU load version"/>
+   <!--
+   1. Execute show redudency command and get the output
+   -->
+   <swim:Catch var="rEx">
+   <functionCall:executeShowIssuStateAndGetOutput returnVar="rOutput"/>
+   </swim:Catch>
+   
+   <!-- 
+    2. Is There any exception while 1 
+   -->
+   <j:if test="${rEx != null}">
+    <j:choose>
+	 <j:when test="${isPureIssu}">
+	  <!--
+	   2.1 : there is some exception and install type is pure issu meaning no fall back : Fail the job with appropriate message.
+	  -->
+	  <swim:Stage stage="COMPLETE" stageName="ISSU load version" message="Completed issu load version with error"/>
+	  <swim:JobStatus result="Fail" message="Issu Load Version failed. Error : ${rEx.getReason()}."/>
+	 </j:when>
+	 <j:otherwise>
+	 <!--
+	   2.2 : there is some exception but install type is not pure issu meaning fall back : don't fail the job just throw exception 
+	   with appropriate message.
+	  -->
+	 <swim:Throw message="Issu Load Version failed. Error : ${rEx.getReason()}"/>
+	 </j:otherwise>
+	</j:choose>
+   </j:if>
+   
+   <!--
+   3. With output for show redudency command , let get the slot no for active and standby processors.
+   -->
+   <functionCall:extractRPSlot returnVar="activeSlotNo" forActive="true" output="${rOutput}"/>
+   <functionCall:extractRPSlot returnVar="sbSlotNo" forActive="false" output="${rOutput}"/>
+   <swim:Log type="LOGDEBUG"
+             message="Load version command formation, found active slot ${activeSlotNo} and standby slot ${sbSlotNo}."/>
+   
+   <!--
+   4. validate the slot numbers.
+   -->
+   <j:if test="${activeSlotNo &lt; 0 || sbSlotNo &lt; 0 }">
+   <j:choose>
+	 <j:when test="${isPureIssu}">
+	  <!--
+	   4.1 : unexpected slot nos and install type is pure issu meaning no fall back : Fail the job with appropriate message.
+	  -->
+	  <swim:Stage stage="COMPLETE" stageName="ISSU load version" message="Completed issu load version with error"/>
+	  <swim:JobStatus result="Fail" message="Issu Load Version failed. Error : unexpected slot no : active ${activeSlotNo}, standby ${sbSlotNo}"/>
+	 </j:when>
+	 <j:otherwise>
+	 <!--
+	   4.2 : unexpected slot no but install type is not pure issu meaning fall back : don't fail the job just throw exception 
+	   with appropriate message.
+	  -->
+	 <swim:Throw message="Issu Load Version failed. Error : unexpected slot no : active ${activeSlotNo}, standby ${sbSlotNo}"/>
+	 </j:otherwise>
+	</j:choose>
+   </j:if>
+   
+   <!--
+   5 . have got slot nos : let cerate loadversion command and execute it.
+   -->
+   <j:set var="issuLoadVersionCommand" value ="issu loadversion ${activeSlotNo} ${activeFullPath} ${sbSlotNo} ${standbyFullPath}"/>
+   <swim:Catch var="loadVersionEx">
+    <functionCall:executeCommandOutput returnVar="loadVersionOutput" commandString="${issuLoadVersionCommand}"/>
+   </swim:Catch>
+   <j:choose>
+    <j:when test="${loadVersionEx != null}">
+	 <j:if test="${!isPureIssu}">
+	  <swim:Throw message="${loadVersionEx.getReason()}"/>
+	 </j:if>
+	 <swim:JobLog ip="${Device.ipAddress}" message="LOAD VERSION FILED: ${loadVersionEx.getReason()}"/>
+	 <swim:JobStatus result="Fail"
+                          message="ISSU Load version failed."/>
+	</j:when>
+	<j:otherwise>
+	 <!--
+	 Load version done
+	 -->
+	 <swim:JobLog ip="${Device.ipAddress}" message="Load Version complete with output : ${loadVersionOutput}"/>
+	 <swim:Catch var="UDException">
+	  <u:Sleep time="180000"/>
+	  <functionCall:waitForIssuOperationToComplete Device="${Device}" peerState="STANDBY HOT" MaxWait="1800000"/>
+	 </swim:Catch>
+	 <j:if test="${UDException != null}">
+	  <swim:JobLog ip="${Device.ipAddress}" message="LOAD VERSION FILED: ${UDException.getReason()}"/>
+	 <swim:JobStatus result="Fail"
+                          message="ISSU Load version failed."/>
+	 </j:if>
+	</j:otherwise>
+   </j:choose>
+   <swim:Stage stage="COMPLETE" stageName="ISSU load version" message="completed issu load version"/>
+  </swim:Function>
+    
+  <!-- *****************************************************************************************************
+  Waits for issu command to complete.
+  Input:
+   * Device : the device bean
+   * MaxWait:
+   * peerState:
+  Throws :
+     if max time elaspled. 
+  **********************************************************************************************************-->
+  <swim:Function name ="waitForIssuOperationToComplete">
+   <swim:JobLog ip="${Device.ipAddress}" message="Waiting for issu operation to complete."/>
+   <j:if test="${MaxWait &gt; 0}">
+   <swim:Catch var="ex">
+    <functionCall:executeShowRedudencyStateAndGetOutput returnVar="op" Device="${Device}"/>
+   </swim:Catch>
+   <j:choose>
+    <j:when test="${ex !=null}">
+	 <!--
+	 Sleep for 2 min and try again.
+	 -->
+	 <j:set var="MaxWait" value="${MaxWait - 120000}"/>
+	 <u:Sleep time="120000"/>
+	 <functionCall:waitForIssuOperationToComplete Device="${Device}" peerState="${peerState}" MaxWait="${MaxWait}"/>
+	 <swim:Return/>
+	</j:when>
+	<j:otherwise>
+	   <j:set var="isDone" value="false"/>
+	   <swim:Catch var="timeTaken">
+	    <functionCall:parseAndCheckIfIssuProcessDone returnVar="isDone" peerState="${peerState}" output="${op}"/>
+	   </swim:Catch>
+	   <j:choose>
+	    <j:when test="${isDone == true}">
+		 <!--
+		  Issu process is complete...
+		 -->
+		 <swim:JobLog ip="${Device.ipAddress}" message="Issu operation is complete ..."/>
+		 <swim:Return/>
+		</j:when>
+		<j:otherwise>
+		 <j:set var="MaxWait" value="${MaxWait - 120000}"/>
+	     <u:Sleep time="120000"/>
+	     <functionCall:waitForIssuOperationToComplete Device="${Device}" peerState="${peerState}" MaxWait="${MaxWait}"/>
+		 <swim:Return/>
+		</j:otherwise>
+	   </j:choose>
+	</j:otherwise>
+   </j:choose>
+   </j:if>
+   <swim:Throw message="Unable to determine if issu operation is complete."/>
+  </swim:Function>
+  
+  <!-- *****************************************************************************************************
+  parses show redudency states output string to determine if issu process with respect to previous issu command
+  is complete.
+  Input:
+   * peerState: 
+   * output : show redundancy states command output string.
+  Output: 
+   * boolean. 
+  **********************************************************************************************************-->
+  <swim:Function name ="parseAndCheckIfIssuProcessDone">
+   <j:choose>
+    <j:when test="${output != null}">
+	 <j:set var="peerStateRegex" value="\s*[P|p][E|e]{2}[R|r]\s+[S|s][T|t][A|a][T|t][E|e]\s+.+${peerState}\s*"/>  
+	 <!--  For every line of output match current regex -->
+	 <u:Split returnVar="lines" input="${output}"/>		
+     <swim:For var="line" items="${lines}">
+	   <u:Match input="${line}" regex="${peerStateRegex}" />
+       <j:if test="${MATCHED}">
+		<swim:Return varName="${returnVar}" value="true"/>
+	   </j:if>
+     </swim:For>
+	</j:when>
+   </j:choose>
+   <swim:Return varName="${returnVar}" value="false"/>
+  </swim:Function>
+  
+    
+  <!-- *****************************************************************************************************
+  Executes show redundancy states command and returns output string .
+  Input:
+   * Device : the device bean
+  Output: 
+   * the output string.
+  Throws :
+     if command has error or command output is null. 
+  **********************************************************************************************************-->
+  <swim:Function name ="executeShowRedudencyStateAndGetOutput">
+   <swim:JobLog ip="${Device.ipAddress}" message="Executing command : show redundancy states"/>
+   <!--d:ExecuteShowCommand returnVar="result" command="show redundancy states" refreshTime="120000" ip="${Device.ipAddress}"/-->
+   <glib:executeShowCommand returnVar="result" cmd="show redundancy states"  deviceIpAddress="${Device.ipAddress}"/>
+   <j:choose>
+    <j:when test="${result != null}">
+     <j:choose>
+      <j:when test="${result.getError() != null }">
+	   <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+       <swim:Throw message="${result.getError()}"/>
+      </j:when>
+	  <j:when test="${result.getOutput() != null}">
+	   <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+	   <glib:parseErrorFromOutput returnVar="error"
+                               output="${result.getOutput()}"/>
+        <j:if test="${error!=null}">
+         <swim:Throw message="'${command}' failed on device with error: ${result.getOutput()}"/>
+        </j:if>
+	   <swim:Return varName="${returnVar}" value="${result.getOutput()}"/>
+	  </j:when>
+     </j:choose>
+	 </j:when>
+	 <j:otherwise>
+	  <swim:Throw message="show redundancy states command result is null."/>
+	 </j:otherwise>
+	</j:choose>
+  </swim:Function>	
+  
+  <!-- ******************************************************************************************** 
+  Execute ISSU run version command.
+  Global Variables:
+   * Device : The device bean.
+  ***************************************************************************************************-->  
+  <swim:Function name="issuRunVersion">
+   <swim:Stage stage="STARTED" stageName="ISSU run version" message="Starting ISSU run version"/>
+   
+   <j:set var="issuRunVersionCommand" value ="issu runversion &#10;&#10;y&#10;&#10;\n"/>
+   <swim:Catch var="runVersionEx">
+    <functionCall:executeCommandOutput returnVar="runVersionOutput" commandString="${issuRunVersionCommand}"/>
+   </swim:Catch>
+   <j:choose>
+    <j:when test="${runVersionEx != null}">
+	 
+	 <swim:JobLog ip="${Device.ipAddress}" message="RUN VERSION FILED: ${runVersionEx.getReason()}"/>
+	 <swim:JobStatus result="Fail"
+                          message="ISSU Run version failed."/>
+	</j:when>
+	<j:otherwise>
+	 <swim:JobLog ip="${Device.ipAddress}" message="Run Version complete with output : ${runVersionOutput}"/>
+	 <swim:Catch var="UDException">
+	  <u:Sleep time="180000"/>
+	  <functionCall:waitForIssuOperationToComplete Device="${Device}" peerState="STANDBY HOT" MaxWait="1800000"/>
+	 </swim:Catch>
+	 <j:if test="${UDException != null}">
+	  <swim:JobLog ip="${Device.ipAddress}" message="RUN VERSION FILED: ${UDException.getReason()}"/>
+	 <swim:JobStatus result="Fail"
+                          message="ISSU Run version failed."/>
+	 </j:if>
+	</j:otherwise>
+   </j:choose>
+   <swim:Stage stage="COMPLETE" stageName="ISSU run version" message="completed issu run version"/>
+  </swim:Function>
+  
+  <!-- ******************************************************************************************** 
+  Execute ISSU accept version command.
+  Global Variables:
+   * Device : The device bean.
+  ***************************************************************************************************-->  
+  <swim:Function name="issuAcceptVersion">
+   <swim:Stage stage="STARTED" stageName="ISSU accept version" message="Starting ISSU accept version"/>
+   
+   <j:set var="issuAcceptVersionCommand" value ="issu acceptversion"/>
+   <swim:Catch var="acceptVersionEx">
+    <functionCall:executeCommandOutput returnVar="acceptVersionOutput" commandString="${issuAcceptVersionCommand}"/>
+   </swim:Catch>
+   <j:choose>
+    <j:when test="${acceptVersionEx != null}">
+	 
+	 <swim:JobLog ip="${Device.ipAddress}" message="ACCEPT VERSION FILED: ${acceptVersionEx.getReason()}"/>
+	 <swim:JobStatus result="Fail"
+                          message="ISSU Accept version failed."/>
+	</j:when>
+	<j:otherwise>
+	 <swim:JobLog ip="${Device.ipAddress}" message="Accept Version complete with output : ${acceptVersionOutput}"/>
+	</j:otherwise>
+   </j:choose>
+   <swim:Stage stage="COMPLETE" stageName="ISSU accept version" message="completed issu accept version"/>
+  </swim:Function>
+  
+  <!-- ******************************************************************************************** 
+  Execute ISSU commit version command.
+  Global Variables:
+   * Device : The device bean.
+  ***************************************************************************************************-->  
+  <swim:Function name="issuCommitVersion">
+   <swim:Stage stage="STARTED" stageName="ISSU commit version" message="Starting ISSU commit version"/>
+   
+   <j:set var="issuCommitVersionCommand" value ="issu commitversion"/>
+   <swim:Catch var="commitVersionEx">
+    <functionCall:executeCommandOutput returnVar="commitVersionOutput" commandString="${issuCommitVersionCommand}"/>
+   </swim:Catch>
+   <j:choose>
+    <j:when test="${commitVersionEx != null}">
+	 
+	 <swim:JobLog ip="${Device.ipAddress}" message="COMMIT VERSION FILED: ${commitVersionEx.getReason()}"/>
+	 <swim:JobStatus result="Fail"
+                          message="ISSU Commit version failed."/>
+	</j:when>
+	<j:otherwise>
+	 <swim:JobLog ip="${Device.ipAddress}" message="Commit Version complete with output : ${commitVersionOutput}"/>
+	 <swim:Catch var="UDException">
+	  <u:Sleep time="180000"/>
+	  <functionCall:waitForIssuOperationToComplete Device="${Device}" peerState="STANDBY HOT" MaxWait="1800000"/>
+	 </swim:Catch>
+	 <j:if test="${UDException != null}">
+	  <swim:JobLog ip="${Device.ipAddress}" message="COMMIT VERSION FILED: ${UDException.getReason()}"/>
+	 <swim:JobStatus result="Fail"
+                          message="ISSU Commit version failed."/>
+	 </j:if>
+	</j:otherwise>
+   </j:choose>
+   <swim:Stage stage="COMPLETE" stageName="ISSU commit version" message="completed issu commit version"/>
+  </swim:Function>
+  
+  <!--
+   *fpdFileName : 
+  -->
+  <swim:Function name="getFPDSlotsAndUpgrade">
+   <swim:JobLog ip="${Device.ipAddress}" message="Trying to identify module FPD slots"/>
+   <swim:Stage stage="STARTED" stageName="AnalyzeFPDSlots" message="Analyzing FPD Slot"/>
+   <swim:Catch var="showModException">
+    <functionCall:executeShowCommandAndGetOutput returnVar="output" cmd="show hw-module all fpd" Device="${Device}"/> 
+   </swim:Catch>
+   
+   <j:choose>
+    <j:when test="${showModException != null}">
+	 <swim:JobStatus result="Fail" message="Unable to identify module FPD slots, ${showModException.getReason()}"/>
+	 <swim:Return/>
+	</j:when>
+	<j:when test="${output == null}">
+	 <swim:JobStatus result="Fail" message="Unable to identify module FPD slots,output of show hw-module all fpd command is null"/>
+	 <swim:Return/>
+	</j:when>
+	<j:otherwise>
+	 <j:set var="moduleFpdSlotRegex" value="^\s*(\d+)\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+.*"/>
+	 <u:Split returnVar="lines" input="${output}"/>		
+     <swim:For var="line" items="${lines}">
+	   <u:Match input="${line}" regex="${moduleFpdSlotRegex}" vars="moduleValue"/>
+		<j:if test="${MATCHED}">
+		 <!-- add it to a List-->
+		 <j:choose>
+		  <j:when test="${engine_Local_Stage.complete!=true}">
+		   <functionCall:upgradeFPDSlot slotNo="${moduleValue}" fpdFileName="${fpdFileName}"/>
+		  </j:when>
+		  <j:otherwise>
+		   <swim:Break/>
+		  </j:otherwise>
+		 </j:choose>
+		</j:if>
+	 </swim:For>
+	 </j:otherwise>
+	 </j:choose>
+  </swim:Function>
+  
+  
+  <!--
+  #upgrade hw-module slot 8 fpd file sup-bootdisk:c7600-fpd-pkg.150   force
+  WEP-7609-3#show upgrade fpd progress 
+
+FPD Image Upgrade Progress Table:
+
+ ==== =================== ====================================================
+                                               Approx.
+                          Field Programmable    Time     Elapsed
+ Slot Card Type           Device : "ID-Name"   Needed      Time    State
+ ==== =================== ================== ========== ========== ===========
+    1 7600-ES20-10G3CXL   1-ROMMON            00:01:00   00:00:09  Completed
+                          2-I/O FPGA          00:00:30   00:00:09  Completed
+                          3-PKT ENG FPGA      00:02:00   00:00:47  Completed
+                          4-2x10GE LINK FPGA  00:03:00   00:00:56  Updating...
+ ==== =================== ====================================================
+
+WEP-7609-3#show upgrade fpd progress 
+
+% There is no FPD image upgrade in progress.
+
+WEP-7609-3#show upgrade fpd progress 
+
+% There is no FPD image upgrade in progress.
+
+        -->
+ 
+        <!--
+        Inputs:
+         * slotNo : slot no for fpd upgrade
+         * fpdFileName : fpd file name with full path
+        -->
+        <swim:Function name="upgradeFPDSlot">
+            <j:if test="${slotNo != null &amp;&amp; fpdFileName != null}">
+                <swim:Stage stage="STARTED" stageName="hw-module slot ${slotNo} fpd &#10;y&#10;" message="Preparing commands related to hw-module slot ${slotNo} fpd"/>
+                <j:set var="cmd" value="upgrade hw-module slot ${slotNo} fpd file ${fpdFileName}"/>
+                <d:ExecuteCommand returnVar="result" command="${cmd}" refreshTime="1200000" ip="${Device.ipAddress}"/>
+                <j:choose>
+                    <j:when test="${result != null}">
+                        <j:choose>
+                            <j:when test="${result.getError() != null }">
+                                <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+                                <swim:JobStatus result="Fail" message="${cmd} failed on device with error: ${result.getError()}"/>
+                                <swim:Return/>
+                            </j:when>
+                            <j:when test="${result.getOutput() != null &amp;&amp; result.getOutput().length() &gt; 0 }">
+                                <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+                                <glib:parseErrorFromOutput returnVar="error"
+                                        output="${result.getOutput()}"/>
+                                <j:if test="${error!=null}">
+                                    <!-- Do not throw exception here set job status as failed just return-->
+                                    <swim:JobStatus result="Fail" message="${cmd} failed on device with error: ${result.getOutput()}"/>
+                                </j:if>
+                            </j:when>
+                            <j:otherwise>
+                                <!--  Unable to capture result , possibly there are slow responding commands-->
+                                <u:Sleep time="120000"/>
+                            </j:otherwise>
+                        </j:choose>
+                    </j:when>
+                    <j:otherwise>
+                        <!--  Unable to capture result , possibly there are slow responding commands-->
+                        <u:Sleep time="120000"/>
+                    </j:otherwise>
+                </j:choose>
+	 
+                <!--
+                Coming till here means command is issued lets verify the upgrade progress..
+                -->
+                <swim:Create returnVar="wtTime" type="LongNumber" value ="1800000"/>
+                <functionCall:waitForfpdSlotUpgradeToComplete tm="${wtTime}"/>
+                <j:if test="${engine_Local_Stage.complete!=true}">
+                    <swim:Stage stage="COMPLETE" stageName="hw-module slot ${slotNo} fpd " message="Completed commands related to hw-module slot ${slotNo} fpd"/> 
+                </j:if>
+            </j:if>
+        </swim:Function>
+
+        <!--
+        -->
+        <swim:Function name="waitForfpdSlotUpgradeToComplete">
+            <j:if test="${engine_Local_Stage.complete==true}">
+                <swim:Return/>
+            </j:if>
+            <j:choose>
+                <j:when test="${tm &gt; 0}">
+                    <j:set var="cmd" value="show upgrade fpd progress"/>
+                    <d:ExecuteCommand returnVar="result" command="${cmd}" refreshTime="120000" ip="${Device.ipAddress}"/>
+                    <j:choose>
+                        <j:when test="${result != null}">
+                            <j:choose>
+                                <j:when test="${result.getError() != null }">
+                                    <swim:JobLog ip="${Device.ipAddress}" message="Command error : ${result.getError()}"/>
+                                    <u:Sleep time="120000"/>
+                                    <j:set var="tm" value="${tm - 120000}"/>
+                                    <functionCall:waitForfpdSlotUpgradeToComplete tm="${tm}"/>
+                                    <swim:Return/>
+                                </j:when>
+                                <j:when test="${result.getOutput() != null &amp;&amp; result.getOutput().length() &gt; 0 }">
+                                    <swim:JobLog ip="${Device.ipAddress}" message="Command output : ${result.getOutput()}"/>
+                                    <su:contains returnVar="isDone" on="${result.getOutput()}" token=""/>
+                                    <j:choose>
+                                        <j:when test="${isDone==true}">
+                                            <swim:Return/>
+                                        </j:when>
+                                        <j:otherwise>
+                                            <u:Sleep time="120000"/>
+                                            <j:set var="tm" value="${tm - 120000}"/>
+                                            <functionCall:waitForfpdSlotUpgradeToComplete tm="${tm}"/>
+                                            <swim:Return/>
+                                        </j:otherwise>
+                                    </j:choose>
+                                    <!--
+                                    -->
+                                </j:when>
+                                <j:otherwise>
+                                    <!--  Unable to capture result , possibly there are slow responding commands-->
+                                    <u:Sleep time="120000"/>
+                                    <!-- let this be little slow -->
+                                    <j:set var="tm" value="${tm - 60000}"/>
+                                    <functionCall:waitForfpdSlotUpgradeToComplete tm="${tm}"/>
+                                    <swim:Return/>
+                                </j:otherwise>
+                            </j:choose>
+                        </j:when>
+                        <j:otherwise>
+                            <!--  Unable to capture result , possibly there are slow responding commands-->
+                            <u:Sleep time="120000"/>
+                            <j:set var="tm" value="${tm - 120000}"/>
+                            <functionCall:waitForfpdSlotUpgradeToComplete tm="${tm}"/>
+                            <swim:Return/>
+                        </j:otherwise>
+                    </j:choose>
+                </j:when>
+                <j:otherwise>
+                    <!--
+                        FAIL the job
+                    -->
+                    <swim:JobStatus result="Fail" message="Unable to identify if FPD slot upgrade is done."/>
+                </j:otherwise>
+            </j:choose>
+        </swim:Function>
+ 
+         
+          <!--******************************************************************************************
+        To Copy the running-config to sup-bootdisk
+        If the file doesn't already exists - copy
+        Else overwrite
+        param1: The file name into which running-config is copied 
+        -->
+        
+        <swim:Function name="copyRunningConfigToSupBootdisk">
+            <swim:JobLog ip="${Device.ipAddress}" message="Copying Running-Config on sup-bootdisk:"/>
+            <functionCall:checkFileOnDisk returnVar="checkResult" param1="pre15.0-1-S60-eng-sp.cfg"/>
+            <!--<swim:JobLog ip="${Device.ipAddress}" message="checkResult is ${checkResult}"/>-->
+            <j:choose>
+                <j:when test="${checkResult}">
+                    <d:ExecuteCommand returnVar="copyRunConfigResult" command="copy running-config sup-bootdisk:pre15.0-1-S60-eng-sp.cfg&#10;&#10;&#10;" ip ="${Device.ipAddress}"/>
+                    <swim:JobLog ip="${Device.ipAddress}" message="File already exists...overwriting"/>
+                </j:when>
+                <j:otherwise>
+                    <d:ExecuteCommand returnVar="copyRunConfigResult" command="copy running-config sup-bootdisk:pre15.0-1-S60-eng-sp.cfg&#10;&#10;" ip ="${Device.ipAddress}"/>
+                    <swim:JobLog ip="${Device.ipAddress}" message="File does not exist...copying"/>
+                </j:otherwise>
+            </j:choose>
+            
+            <glib:parseErrorFromOutput returnVar="hasError" output="${copyRunConfigResult.getOutput()}"/>
+            <j:choose>
+                <j:when test="${hasError!=null }">
+                    <swim:JobLog ip="${Device.ipAddress}" message="Error copying files..."/>
+                </j:when>
+                <j:otherwise>
+                    <swim:JobLog ip="${Device.ipAddress}" message="Copying is done with result ${copyRunConfigResult.getOutput()}"/>
+                </j:otherwise>
+            </j:choose>
+        </swim:Function>
+        
+        
+        <!--*********************************************************************************************
+        Checks if file already exists on the disk or not
+        Input:param1:File to be checked
+        Output: True-if file already exists on sup-bootdisk
+                False-if file doesnt exists on sup-bootdisk
+        *********************************************************************************************-->
+        <swim:Function name="checkFileOnDisk" >
+            <!--    <swim:JobLog ip="${Device.ipAddress}" message="inside the function def checkfileOnDisk"/> 
+            <swim:JobLog ip="${Device.ipAddress}" message="The value of param 1 inside defintion is ${param1}"/>-->
+            <d:ExecuteCommand returnVar="diskDirectory" command="dir sup-bootdisk:" ip ="${Device.ipAddress}"/>    
+            <swim:JobLog ip="${Device.ipAddress}" message="output of dir sup-bootdisk:${diskDirectory.getOutput()} "/>
+            <su:contains returnVar="booleanString" on="${diskDirectory.getOutput()}" token="${param1}"/> 
+            <!--        <swim:JobLog ip="${Device.ipAddress}" message=" booleanString is ${booleanString}" />  -->
+            <swim:Return varName="${returnVar}" value="${booleanString}"/>
+        </swim:Function>
+        
+        <!--***********************************************************************************************
+        To verify if the image is corrupted or not by comparing the md5 hash value of the image with 
+        its std value
+        Global:fileAtPath - name along with path of the image to be installed
+        stdMD5:STD md5 value for the selected image
+        Output:Success if the md5 generated value is the same as std value
+        Job is failed if the md5 generated value is not the same as std value 
+        ***************************************************************************************************-->
+        
+        
+        <swim:Function name="md5Verification" >
+            <swim:JobLog ip="${Device.ipAddress}" message="Starting MD5 check..."/>
+            <d:ExecuteCommand returnVar="md5Result" command="verify /md5 ${fileAtPath}" ip ="${Device.ipAddress}"/> 
+            <!--<swim:JobLog ip="${Device.ipAddress}" message="The output of md5 check is ${md5Result.getOutput()} "/>-->
+            <glib:parseErrorFromOutput returnVar="Error" output="${md5Result.getOutput()}"/> 
+            <j:choose>
+                <j:when test="${hasError!=null }">
+                    <swim:JobLog ip="${Device.ipAddress}" message="Error while finding the MD5 value of the image..."/>
+                    <swim:JobStatus result="Fail" message=" Error finding MD5 checksum..."/>
+                </j:when>
+                <j:otherwise>
+                    <u:Split returnVar="lines" input="${md5Result.getOutput()}"/>
+                    <swim:For var="line" items="${lines}" >
+                        <u:Match input="${line}" regex="^.*\=[\s]*([A-Za-z0-9]*)[\s]*.*$" vars="imageCheck" /> 
+                        <j:if test="${MATCHED==true}">
+                            <swim:JobLog ip="${Device.ipAddress}" message="Value of MD5 is ${imageCheck}"/>
+                        </j:if>	 
+                       
+                    </swim:For>			  
+                    
+                    <functionCall:getNameFromFullName returnVar="imageName" fname="${fname}"/>
+                    <swim:JobLog ip="${Device.ipAddress}" message="imageName is ${imageName}"/>    
+                    <u:Get returnVar="stdMD5" on="${md5Map}" param="${imageName}"/>            
+                    <su:isEqual returnVar="booleanHost" lhs="${stdMD5}" rhs="${imageCheck}" ignoreCase="false"/>
+                    <j:choose> 
+                        <j:when test="${booleanHost}">
+                            <swim:JobLog ip="${Device.ipAddress}" message="No errors in image MD5 check successful"/>
+                        </j:when>
+                        <j:otherwise>
+                            <swim:JobLog ip="${Device.ipAddress}" message="Image verification failed after checking with std value..."/>
+                            <swim:JobStatus result="Fail" message="MD5 with errors..."/>
+                        </j:otherwise>
+                    </j:choose>
+                </j:otherwise>
+            </j:choose>
+        </swim:Function>  
+        
+        <!--**********************************************************************************************
+        The given function initializes the Map with the Image name as the Key and MD5 Hash vale as the Value
+        Global Variable:
+        md5Map : Map which has to be initialized with Image name as the Key and MD5 Hash vale as the Value
+        **************************************************************************************************-->
+          
+        <swim:Function name="initializeImageMD5Map" >  
+            <swim:JobLog ip="${Device.ipAddress}" message="Initialising the ImageMd5 Map"/>
+            <j:set var="Image1" value="c7600-fpd-pkg.122-33.SRD6"/>
+            <j:set var="md5_1" value="c2d5905539580dfda35a63965289df9f"/>
+            <u:Add on="${md5Map}" param1="${Image1}" param2="${md5_1}"/>
+ 
+            <j:set var="Image2" value="c7600-fpd-pkg.122-33.SRE8"/>
+            <j:set var="md5_2" value="d2554d9dd7448a4d36f0f56a51eaa992"/>
+            <u:Add on="${md5Map}" param1="${Image2}" param2="${md5_2}"/> 
+              
+            <j:set var="Image3" value="c7600rsp72043-advipservicesk9-mz.122-33.SRD6"/>
+            <j:set var="md5_3" value="594a35eca666347908b7a9539729d193"/>
+            <u:Add on="${md5Map}" param1="${Image3}" param2="${md5_3}"/>   			 
+            
+            <j:set var="Image4" value="c7600rsp72043-advipservicesk9-mz.122-33.SRE8"/>
+            <j:set var="md5_4" value="e0a2f659c37692c4f325c10216a3cad4"/>
+            <u:Add on="${md5Map}" param1="${Image4}" param2="${md5_4}"/>   
+            <!--<swim:JobLog ip="${Device.ipAddress}" message="The MAP obtained inside function is ${md5Map}"/>-->
+            <swim:Return varName="${returnVar}" value="${md5Map}"/>
+        </swim:Function>
+       
+        <!--**********************************************************************************************
+          The given function returns the Name of the file from the full name of the file (Name with extension)
+          Global Variable:Name of the image whose extension has to be removed
+          Output:Name of the image whose extension has been removed
+        **************************************************************************************************-->
+           
+     		      
+        <swim:Function name="getNameFromFullName" >  
+            <j:set var="on" value="${fname}"/>  
+            <j:set var="regexEx" value="^.*(\.[a-zA-Z]*)$"/>	
+            <u:Match input="${on}" regex="${regexEx}" vars="regexs"/> 
+            <!--<swim:JobLog ip="${Device.ipAddress}" message="the value of regex inside get name from full name  is ${regexs}"/>-->
+            <j:set var="replacement" value=""/>	 
+            <j:choose>
+                <j:when test="${on != null &amp;&amp; regexs != null}">
+                    <j:invoke var="invokeResult" on="${on}" method="replace">
+                        <j:arg type="java.lang.String" value="${regexs}" />
+                        <j:arg type="java.lang.String" value="${replacement}" />
+                    </j:invoke>
+                    <swim:JobLog ip="${Device.ipAddress}" message="The value obtained on image with extension after extracting is ${invokeResult}"/>
+                </j:when>
+                <j:otherwise>
+                    <j:choose>
+                        <j:when test="${on == null}">
+                            <swim:Throw message="Input 'on' is null for replaceAll method call"/>
+                            <Return/>
+                        </j:when>
+                        <j:otherwise>
+                            <j:set var="invokeResult" value="${on}"/>
+                        </j:otherwise>
+                    </j:choose>
+                </j:otherwise>
+            </j:choose>	
+            <swim:JobLog ip="${Device.ipAddress}" message="The image name extracted is ${invokeResult}"/> 
+            <swim:Return varName="${returnVar}" value="${invokeResult}"/>
+        </swim:Function>	
+  
+  
+        <!--**********************************************************************************************
+          The given function removes the redundant BOOT commands just after reload
+          
+        **************************************************************************************************-->
+                
+        <swim:Function name="removeRedundantBoot" >
+            <j:set var="firstLine" value="true" />
+            <j:set var="bootNew" value="" />
+            <d:ExecuteShowCommand returnVar="result" command="show running-config | include boot system" ip="${Device.ipAddress}" refreshTime="0"/>
+            <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+            <j:if test="${error!=null}">
+                <swim:JobLog ip="${Device.ipAddress}" message="Error executing command"/>
+            </j:if>
+            <u:Split input="${result.getOutput()}" returnVar="lines"/>
+            <swim:Create returnVar="Cmds" type="List"/>
+            
+            <swim:For var="line" items="${lines}">
+                <u:Add on="${Cmds}" param="${line}"/>
+            </swim:For>     
+            <swim:For var="line" items="${Cmds}">
+                <j:if test="${firstLine}" >
+                    <j:set var="bootNew" value="${bootNew}${line} &#10;"/>
+                    
+                </j:if>
+                <j:if test="${firstLine==false}" >
+                    <j:set var="bootNew" value="${bootNew}no ${line} &#10;"/>
+                </j:if>
+                <j:set var="firstLine" value="false" />
+            </swim:For>  
+            <swim:JobLog ip="${Device.ipAddress}" message="BOOT IS ${bootNew}"/>
+            <d:ExecuteConfigCommand returnVar="result" command="${bootNew}" ip="${Device.ipAddress}"/>
+            <glib:parseErrorFromOutput returnVar="error" output="${result.getOutput()}"/>
+            <j:if test="${error!=null}">
+                <swim:JobLog ip="${Device.ipAddress}" message="Error executing command"/>
+            </j:if>		
+            
+            <swim:JobLog ip="${Device.ipAddress}" message="Executing write memory"/>            
+            <d:ExecuteCommand returnVar="result1" command="write memory&#10;" ip="${Device.ipAddress}"/>
+            <glib:parseErrorFromOutput returnVar="error" output="${result1.getOutput()}"/>
+            <j:if test="${error!=null}">
+                <swim:JobLog ip="${Device.ipAddress}" message="Error executing command"/>
+            </j:if>																	   
+            <swim:JobLog ip="${Device.ipAddress}" message="write memory completed"/>           
+        </swim:Function>
+        
+        <!-- Same function as glib:parseErrorFromOutput..just removing the "failed keyword" -->
+        
+        <swim:Function name="parseErrorFromOutput">
+            <j:if test="${output!=null}">
+                <su:toLowerCase returnVar="lower" on="${output}"/>
+                <su:contains returnVar="invalid" on="${lower}" token="% invalid"/>
+                <su:contains returnVar="hasErrorr" on="${lower}" token="%error"/>
+                <su:contains returnVar="hasErr" on="${lower}" token="% error "/>
+                <su:contains returnVar="incomplete" on="${lower}" token="% incomplete"/>
+                <!-- <su:contains returnVar="failedStr" on="${lower}" token="failed"/>--> 
+                <su:contains returnVar="unknownStr" on="${lower}" token="% unknown"/>
+                <su:contains returnVar="errorrStt" on="${lower}" token="error:"/>
+                <j:if test="${hasErrorr || invalid || incomplete || hasErr || unknownStr || errorrStt}">
+                    <swim:Return varName="${returnVar}" value="${output}"/>
+                </j:if>
+                <swim:Return varName="${returnVar}"/>
+            </j:if>
+            <swim:Return varName="${returnVar}" value="output is null"/>
+        </swim:Function>  
+        
+        <swim:Function name ="ShowCommandsChecklistImp">
+            <swim:Stage stage="STARTED" stageName="startingImpchecklist"
+                        message="checklist started"/>
+            <j:set var="labelSuffix" value="_"/>
+            <j:choose>
+                <j:when test="${isPre == true}">
+                    <j:set var="labelSuffix" value="Pre"/>
+                </j:when>
+                <j:otherwise>
+                    <j:set var="labelSuffix" value="Post"/>
+                </j:otherwise>
+            </j:choose>
+            <swim:JobLog ip="${Device.ipAddress}" message="Starting to execute commands and storing results of show command checklist : ${labelSuffix}"/>
+            <swim:Stage stage="STARTED" stageName="phase1_impchecklist"
+                        message="phase1_checklist"/>
+            <swim:Catch var="sEx">
+                <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show running-config" label="show_running_config_${labelSuffix}"/>
+            </swim:Catch>  
+            <swim:Catch var="sEx">
+                <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip int brief" label="show_ip_int_brief_${labelSuffix}"/>
+            </swim:Catch>     
+            <swim:Catch var="sEx">
+                <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip ospf neighbor" label="show_ip_ospf_neighbor_${labelSuffix}"/>
+            </swim:Catch>
+            <swim:Catch var="sEx">
+                <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip ospf int brief" label="show_ip_ospf_int_brief_${labelSuffix}"/>
+            </swim:Catch> 
+            <swim:Catch var="sEx">
+                <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show isis neighbors" label="show_isis_neighbors_${labelSuffix}"/>
+            </swim:Catch> 
+            <swim:Stage stage="STARTED" stageName="phase2_impchecklist"
+                        message="phase2_checklist"/>
+            <swim:Catch var="sEx">
+                <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show cdp neighbors" label="show_cdp_neighbors_${labelSuffix}"/>
+            </swim:Catch> 
+            <swim:Catch var="sEx">
+                <functionCall:executeCommandAndStoreOutput Device="${Device}" cmd="show ip bgp summary" label="show_ip_bgp_summary_${labelSuffix}"/>
+            </swim:Catch>  				 
+        </swim:Function> 
+        <!-- This function is custom made for windstream network only -->
+        <!-- input: name of the image
+            output: path to the image location in ftp server
+        -->
+        <swim:Function name="windstreamMap"> 
+            <su:contains returnVar="sup32" on="${imageName}" token="s32"/> 
+            <swim:JobLog ip="${Device.ipAddress}" message="Inside function  ${imageName} and ${sup32}"/>
+            <j:if test="${sup32==true}">
+                <j:set var="ftpPath" value="ftp://nmcdata:data@66.83.21.62/c7600/c7600s3223-advipservicesk9-mz-eng-sp-150-1-S6.bin"/>
+            </j:if>
+            <su:contains returnVar="s720" on="${imageName}" token="s720"/>
+            <swim:JobLog ip="${Device.ipAddress}" message="Inside function  ${imageName} and ${s720}"/>
+            <j:if test="${s720==true}">
+                <j:set var="ftpPath" value="ftp://nmcdata:data@66.83.21.62/c7600/sup720/c7600s72033-advipservicesk9-mz-eng-sp-150-1-S6.bin"/>
+            </j:if>
+            <su:contains returnVar="rsp720" on="${imageName}" token="rsp720"/>
+            <j:if test="${rsp720==true}">
+                <j:set var="ftpPath" value="ftp://nmcdata:data@66.83.21.62/c7600/rsp720/c7600rsp72043-advipservicesk9-mz-eng-sp-150-1-S6.bin"/>
+            </j:if>
+            
+            <su:contains returnVar="fpd" on="${imageName}" token="c7600-fpd-pkg.150-1.S6.pkg"/>
+            <j:if test="${fdp==true}">
+                <j:set var="ftpPath" value="ftp://nmcdata:data@66.83.21.62/c7600/c7600-fpd-pkg.150-1.S6.pkg"/>
+            </j:if>
+            
+            <swim:Return varName="${returnVar}" value="${ftpPath}"/>
+        </swim:Function>
+        
+        <!--- new set of functions
+        SELF-EXPLANATORY    -->
+        <!-- checks if fpd image is present on a GIVEN drive-->                         
+        <swim:Function name="checkFpdImage">           
+            <u:Get returnVar="fpdImageName" on="${fpdMap}" param="${imageName}"/>
+            <d:ExecuteCommand returnVar="result"
+                              command="show ${freeDrive}&#10;&#10;&#10;"
+                              ip="${Device.ipAddress}" refreshTime="10800000"/>
+            <su:contains returnVar="contains" on="${result.getOutput()}" token="${fpdImageName}"/>
+            <swim:Return varName="${returnVar}" value="${contains}"/>
+        </swim:Function>
+        
+        <!-- return the fpd path on the ftp server (i.e generally,the CSPC)-->
+        <swim:Function name="getFpdImagePath">
+            <u:Get returnVar="fpdImageName" on="${fpdMap}" param="${imageName}"/>
+            <swim:Return varName="${returnVar}" value="ftp://ftadmin:CiscoCspc1@192.168.1.1/tftproot/download/${fpdImageName}"/>
+        </swim:Function>
+        
+        <swim:Function name="initializeFpdMap" >  
+            <swim:JobLog ip="${Device.ipAddress}" message="Initialising the ImageFpd5 Map"/>
+            <j:set var="Image1" value="c7600rsp72043-advipservicesk9-mz.122-33.SRD6.bin"/>
+            <j:set var="fpd_1" value="c7600-fpd-pkg.122-33.SRD6.pkg"/>
+            <u:Add on="${fpdMap}" param1="${Image1}" param2="${fpd_1}"/>
+ 
+            <j:set var="Image2" value="c7600rsp72043-advipservicesk9-mz.122-33.SRE8.bin"/>
+            <j:set var="fpd_2" value="c7600-fpd-pkg.122-33.SRE8.pkg"/>
+            <u:Add on="${fpdMap}" param1="${Image2}" param2="${fpd_2}"/> 
+                 
+            <!--<swim:JobLog ip="${Device.ipAddress}" message="The MAP obtained inside function is ${md5Map}"/>-->
+            <swim:Return varName="${returnVar}" value="${FpdMap}"/>
+        </swim:Function>
+        
+        <swim:Function name ="checkRspHealth">
+            <j:set var="regEx" value="^.*[\s]*=[\s]*([0-9]*).*$"/>
+            <d:ExecuteCommand returnVar="result" command="remote command switch show platform hardware asicreg naboo all | inc FE480050&#10;&#10;&#10;"
+                              ip="${Device.ipAddress}"/>
+            <j:set var="result" value="${result.getOutput()}"/>
+            <u:Split returnVar="lines" input="${result}"/>
+            <swim:For var="line" items="${lines}">                 
+                <u:Match input="${line}" regex="${regEx}" vars="statusRegister1" trim="true"/>
+                <j:if test="${MATCHED}">
+                    <swim:JobLog ip="${Device.ipAddress}" message=" Active INTR_STATUS_REG = ${statusRegister1}"/>
+                    <j:if test="${statusRegister1==1000}">
+                        <swim:JobStatus result="Fail" message="INTR_STATUS_REG = ${statusRegister1} ACTIVE RSP NEEDS REPLACEMENT.. Aborting Operation "/>
+                    </j:if>
+                </j:if>
+            </swim:For>
+            <d:ExecuteCommand returnVar="result" command="remote command standby-sp show platform hardware asicreg naboo all | inc FE480050&#10;&#10;&#10;"
+                              ip="${Device.ipAddress}"/>
+            <j:set var="result" value="${result.getOutput()}"/>
+            <u:Split returnVar="lines" input="${result}"/>
+            <swim:For var="line" items="${lines}">                 
+                <u:Match input="${line}" regex="${regEx}" vars="statusRegister2" trim="true"/>
+                <j:if test="${MATCHED}">
+                    <swim:JobLog ip="${Device.ipAddress}" message=" Standby INTR_STATUS_REG = ${statusRegister2}"/>
+                    <j:if test="${statusRegister2==1000}">
+                        <swim:JobStatus result="Fail" message="INTR_STATUS_REG = ${statusRegister2} STANDBY RSP NEEDS REPLACEMENT.. Aborting Operation "/>
+                    </j:if>
+                </j:if>
+            </swim:For>         
+        </swim:Function>
+        
+        
+        <!-- new set of functions  -->           
+    </swim:Library>
+</j:jelly>
